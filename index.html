@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="MailForensics — Advanced Email Forensics & Intelligence System. AI-powered email threat detection, geolocation, and forensic intelligence platform for SOC analysts.">
+  <meta name="keywords" content="email security, phishing detection, cybersecurity, SOC, threat intelligence, forensics, MailForensics, SIH 2026">
+  <meta name="author" content="MailForensics Team — SIH 2026">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="MailForensics — Advanced Email Forensics & Intelligence System">
+  <meta property="og:description" content="AI-Powered Email Threat Detection, GeoLocation, and Forensic Intelligence Platform">
+  <meta property="og:type" content="website">
+
+  <title>MailForensics — Advanced Email Forensics & Intelligence System | SIH 2026</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- D3.js -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+
+  <!-- Main CSS -->
+  <link rel="stylesheet" href="css/main.css">
+
+  <style>
+    /* Splash / Loading Screen */
+    #splash {
+      position: fixed;
+      inset: 0;
+      background: #060b16;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 99999;
+      transition: opacity 0.6s ease;
+    }
+    #splash.fade-out { opacity: 0; pointer-events: none; }
+    .splash-logo {
+      font-size: 64px;
+      font-weight: 900;
+      letter-spacing: 12px;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+      animation: splashPulse 2s ease-in-out infinite;
+    }
+    @keyframes splashPulse {
+      0%,100% { filter: brightness(1); }
+      50% { filter: brightness(1.3) drop-shadow(0 0 20px #00d4ff60); }
+    }
+    .splash-tagline { font-size: 14px; color: #4a5568; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 48px; }
+    .splash-loader {
+      width: 200px; height: 3px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .splash-loader-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00d4ff, #7c3aed);
+      border-radius: 3px;
+      animation: splashLoad 1.8s ease-out forwards;
+    }
+    @keyframes splashLoad { from { width: 0; } to { width: 100%; } }
+    .splash-status { font-size: 11px; color: #2d3748; margin-top: 12px; letter-spacing: 2px; text-transform: uppercase; animation: fadeIn 0.5s 0.5s both; }
+
+    /* Particle background */
+    #particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+    .particle {
+      position: absolute;
+      width: 2px; height: 2px;
+      background: #00d4ff;
+      border-radius: 50%;
+      opacity: 0;
+      animation: particleFloat linear infinite;
+    }
+    @keyframes particleFloat {
+      0% { transform: translateY(100vh) translateX(0); opacity: 0; }
+      10% { opacity: 0.4; }
+      90% { opacity: 0.2; }
+      100% { transform: translateY(-20px) translateX(calc(var(--drift, 0) * 1px)); opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Splash Screen -->
+  <div id="splash">
+    <div style="text-align:center">
+      <div class="splash-logo">⬡ MailForensics</div>
+      <div class="splash-tagline">Advanced Email Guardian & Intelligence System</div>
+      <div style="font-size:11px;color:#2d3748;letter-spacing:1px;margin-bottom:32px">SIH 2026 — Problem Statement SIH26106 — AICTE</div>
+      <div class="splash-loader"><div class="splash-loader-fill"></div></div>
+      <div class="splash-status">Initializing threat intelligence engine...</div>
+    </div>
+  </div>
+
+  <!-- Particle Background -->
+  <div id="particles"></div>
+
+  <!-- Main App Layout -->
+  <div class="app-layout">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main id="main-content" class="main-content"></main>
+  </div>
+
+  <!-- Scripts -->
+  <script src="js/data.js"></script>
+  <script src="js/analyzer.js"></script>
+  <script src="js/graph.js"></script>
+  <script src="js/report.js"></script>
+  <script src="js/app.js"></script>
+
+  <script>
+    // Splash screen dismiss
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        const splash = document.getElementById('splash');
+        if (splash) { splash.classList.add('fade-out'); setTimeout(() => splash.remove(), 600); }
+      }, 2200);
+    });
+
+    // Particle system
+    (function() {
+      const container = document.getElementById('particles');
+      const count = 30;
+      for (let i = 0; i < count; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        const x = Math.random() * 100;
+        const dur = 12 + Math.random() * 20;
+        const delay = Math.random() * 15;
+        const size = Math.random() > 0.7 ? 3 : 2;
+        const drift = (Math.random() - 0.5) * 100;
+        const colors = ['#00d4ff', '#7c3aed', '#4f46e5', '#34d399'];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        p.style.cssText = `
+          left: ${x}%;
+          width: ${size}px; height: ${size}px;
+          background: ${color};
+          animation-duration: ${dur}s;
+          animation-delay: ${delay}s;
+          --drift: ${drift};
+        `;
+        container.appendChild(p);
+      }
+    })();
+  </script>
+</body>
+</html>
