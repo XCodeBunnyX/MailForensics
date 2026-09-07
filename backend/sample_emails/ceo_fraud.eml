@@ -1,0 +1,34 @@
+From: "Rajesh Kumar (CEO)" <rajesh.kumar@company-corp.net>
+To: finance@targetcompany.com
+Subject: Urgent Wire Transfer Required - Confidential
+Date: Thu, 03 Sep 2026 14:32:10 +0530
+Message-ID: <rand-9283.BEC.CEO@company-corp.net>
+Reply-To: ceo-urgent@protonmail.com
+MIME-Version: 1.0
+X-Mailer: The Bat! 10.3
+X-Priority: 1 (Highest)
+X-Originating-IP: 45.141.86.100
+Content-Type: text/plain; charset=UTF-8
+Received: from company-corp.net (45.141.86.100) by mx.targetcompany.com
+ with ESMTP; Thu, 03 Sep 2026 14:32:10 +0530
+Authentication-Results: mx.targetcompany.com;
+ spf=softfail smtp.mailfrom=rajesh@company-corp.net;
+ dkim=none;
+ dmarc=fail (p=reject; dis=none)
+
+Hi,
+
+I need you to process an urgent wire transfer of INR 47,50,000 to a vendor account.
+This is time-sensitive and needs to be done today before 5pm.
+
+Beneficiary: Global Trade Solutions Pvt Ltd
+Account: 9823456701
+IFSC: HDFC0002341
+Reference: Project Aurora - Confidential
+
+Please process immediately and confirm. Do NOT discuss this with anyone else.
+This is a board-level confidential acquisition matter.
+
+Regards,
+Rajesh Kumar
+CEO

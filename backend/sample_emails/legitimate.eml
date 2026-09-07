@@ -1,0 +1,28 @@
+From: "GitHub Notifications" <noreply@github.com>
+To: developer@example.com
+Subject: [GmailGuard] Pull request opened: Add README
+Date: Sun, 07 Sep 2026 10:00:00 +0000
+Message-ID: <notif.12345@github.com>
+Reply-To: noreply@github.com
+MIME-Version: 1.0
+X-Mailer: Sendmail 8.15.2
+Content-Type: text/plain; charset=UTF-8
+Received: from outbound.github.com (74.125.200.27) by mx.example.com
+ with ESMTPS; Sun, 07 Sep 2026 10:00:00 +0000
+Authentication-Results: mx.example.com;
+ spf=pass smtp.mailfrom=noreply@github.com;
+ dkim=pass header.d=github.com;
+ dmarc=pass (p=reject; dis=none) header.from=github.com
+
+Hi developer,
+
+A pull request has been opened in the GmailGuard repository.
+
+Title: Add README
+Author: contributor@example.com
+URL: https://github.com/XCodeBunnyX/GmailGuard/pull/1
+
+Please review the changes at your earliest convenience.
+
+Thanks,
+GitHub Notifications

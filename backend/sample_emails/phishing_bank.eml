@@ -1,0 +1,44 @@
+From: "HDFC Bank Security" <security-alert@hdfcbank-secure.co.in>
+To: victim@example.com
+Subject: [URGENT] Your HDFC NetBanking Account Has Been Suspended
+Date: Thu, 03 Sep 2026 08:14:22 +0000
+Message-ID: <20260903081422.7A3F2@hdfcbank-secure.co.in>
+Reply-To: noreply@hdfcbank-secure.co.in
+MIME-Version: 1.0
+X-Mailer: PHPMailer 6.1.8
+X-Originating-IP: 185.234.219.47
+Content-Type: multipart/mixed; boundary="----=_Part_1234_5678"
+Received: from mail.hdfcbank-secure.co.in (185.234.219.47) by mx.example.com
+ (8.15.2/8.15.2) with ESMTP id 3038E4K7063821; Thu, 03 Sep 2026 08:14:22 GMT
+Received: from [192.168.1.105] (unknown [103.21.244.0]) by hdfcbank-secure.co.in
+ (Postfix) with ESMTP; Thu, 03 Sep 2026 08:12:11 +0000
+Authentication-Results: mx.example.com;
+ spf=fail (sender IP is 185.234.219.47)
+ smtp.mailfrom=security@hdfcbank-secure.co.in;
+ dkim=none;
+ dmarc=fail (p=reject; dis=none) header.from=hdfcbank-secure.co.in
+
+------=_Part_1234_5678
+Content-Type: text/plain; charset=UTF-8
+
+Dear Valued Customer,
+
+Your HDFC NetBanking account has been SUSPENDED due to multiple failed login attempts.
+To restore access, please verify your account within 24 hours:
+
+http://hdfc-secure-verify.co.in/login?redirect=account&token=eyJhbGciOiJSUzI1NiJ9
+
+Also verify via: https://185.234.219.47/phish/hdfc/login.php
+
+If you do not verify, your account will be permanently closed.
+
+Click here to verify: http://bit.ly/3xHDFC-verify
+
+------=_Part_1234_5678
+Content-Type: application/pdf; name="AccountSuspensionNotice.pdf.exe"
+Content-Disposition: attachment; filename="AccountSuspensionNotice.pdf.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AALgAAAAAAA==
+
+------=_Part_1234_5678--
