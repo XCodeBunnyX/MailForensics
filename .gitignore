@@ -7,3 +7,12 @@ dist/
 build/
 .env
 *.pkl
+
+# Large dataset files (too large for GitHub)
+phishing_email.csv
+CEAS_08.csv
+Enron.csv
+
+# macOS
+.DS_Store
+.ipynb_checkpoints/
