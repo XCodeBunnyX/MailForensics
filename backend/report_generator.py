@@ -20,6 +20,11 @@ from header_analyzer import HeaderIntelligence
 from threat_scorer import ThreatScore
 from email_parser import ParsedEmail
 from forensic_domain_intelligence import ForensicIntelligenceResult, DomainForensicResult
+from typing import Optional
+try:
+    from osint_intelligence import OSINTAnalysisResult
+except ImportError:
+    OSINTAnalysisResult = Any
 
 
 def generate_report(
@@ -33,7 +38,10 @@ def generate_report(
     ml: MLResult,
     domain_intel: DomainIntelligence,
     threat_score: ThreatScore,
-    forensic_result: ForensicIntelligenceResult,
+    forensic_result: Optional[ForensicIntelligenceResult] = None,
+    osint_result: Optional[OSINTAnalysisResult] = None,
+    correlated_evidence: Optional[list[dict[str, Any]]] = None,
+    phishtank_result: Optional[Any] = None,
 ) -> dict[str, Any]:
     """
     Generate the final structured forensic report.
@@ -288,9 +296,26 @@ def generate_report(
         }
 
     forensics_section: dict[str, Any] = {
-        "domains":     [_serialize_domain_forensic(d) for d in forensic_result.domains],
-        "limitations": forensic_result.limitations,
+        "domains":     [_serialize_domain_forensic(d) for d in forensic_result.domains] if forensic_result else [],
+        "limitations": list(forensic_result.limitations) if forensic_result else [],
     }
+
+    if osint_result:
+        forensics_section["osint"] = {
+            "domains": [d.to_dict() for d in osint_result.domains],
+            "ips": [ip.to_dict() for ip in osint_result.ips],
+            "urls": [u.to_dict() for u in osint_result.urls],
+            "data_source": osint_result.data_source,
+            "limitations": osint_result.limitations,
+        }
+        if osint_result.limitations:
+            forensics_section["limitations"].extend(osint_result.limitations)
+
+    if correlated_evidence:
+        forensics_section["correlated_evidence"] = correlated_evidence
+
+    if phishtank_result:
+        forensics_section["phishtank"] = phishtank_result.to_dict()
 
     # ── Final report ─────────────────────────────────────────────
     report: dict[str, Any] = {
@@ -312,7 +337,8 @@ def generate_report(
         "weights_used":  threat_score.weights_used,
         "limitations":   all_limitations,
         
-        "forensics":     forensics_section,
+        "forensics":           forensics_section,
+        "correlated_evidence": correlated_evidence or [],
     }
 
     return report

@@ -30,6 +30,10 @@ from attachment_analyzer   import analyze_attachments
 from ml_classifier         import classify_email
 from domain_intelligence   import analyze_domain
 from forensic_domain_intelligence import run_forensic_domain_analysis
+from ioc_extractor         import extract_iocs
+from osint_intelligence    import run_osint_analysis
+from evidence_correlator   import correlate_evidence
+from phish_tank            import check_urls_phishtank
 from threat_scorer         import compute_threat_score
 from report_generator      import generate_report
 
@@ -96,6 +100,29 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
     # not affect the threat score unless FORENSIC_HISTORY_SCORE_WEIGHT > 0.
     forensic_result = run_forensic_domain_analysis(parsed, url_analysis)
 
+    # ── Step 10.6: OSINT intelligence ──────────────────────────────
+    # Passive public intelligence lookup on deduplicated indicators
+    # (domains, IPs, URLs).
+    ioc_bundle = extract_iocs(parsed, url_analysis=url_analysis, ip_intel=ip_intel)
+    osint_result = run_osint_analysis(ioc_bundle)
+
+    # ── Step 10.7: PhishTank URL intelligence ─────────────────────
+    # Check extracted URLs against the PhishTank known-phishing database.
+    phishtank_result = check_urls_phishtank(ioc_bundle.urls)
+
+    # ── Step 10.8: Evidence correlation ───────────────────────────
+    correlated_evidence = correlate_evidence(
+        ml=ml_result,
+        auth=auth,
+        ip_intel=ip_intel,
+        domain_intel=domain_intel,
+        url_analysis=url_analysis,
+        att_analysis=att_analysis,
+        osint_result=osint_result,
+        forensic_result=forensic_result,
+        phishtank_result=phishtank_result,
+    )
+
     # ── Step 11: Generate report ──────────────────────────────────
     report = generate_report(
         parsed=parsed,
@@ -109,6 +136,9 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         domain_intel=domain_intel,
         threat_score=threat_score,
         forensic_result=forensic_result,
+        osint_result=osint_result,
+        correlated_evidence=correlated_evidence,
+        phishtank_result=phishtank_result,
     )
 
     return report
@@ -141,6 +171,18 @@ def _print_summary(report: dict) -> None:
         print("\n  ✓  Positive Signals:")
         for ev in report["positive_evidence"]:
             print(f"     {ev['signal']}: {ev['explanation'][:100]}")
+
+    if report.get("correlated_evidence"):
+        print("\n  🔍  Correlated Forensic Evidence:")
+        for cev in report["correlated_evidence"][:5]:
+            print(f"     [{cev['source']}] {cev['finding'][:110]}")
+
+    forensics = report.get("forensics", {})
+    osint = forensics.get("osint")
+    if osint:
+        total_ioc = len(osint.get("domains", [])) + len(osint.get("ips", [])) + len(osint.get("urls", []))
+        print(f"\n  🌐  OSINT Intelligence ({osint.get('data_source', 'Passive')}):")
+        print(f"     Investigated: {len(osint.get('domains', []))} domain(s), {len(osint.get('ips', []))} IP(s), {len(osint.get('urls', []))} URL(s)")
 
     if report["limitations"]:
         print("\n  ℹ  Limitations:")

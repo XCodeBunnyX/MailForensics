@@ -174,5 +174,29 @@ FORENSIC_API_TIMEOUT_S: int = 8
 # Minimum historical IP change count to emit an infrastructure_change evidence item.
 FORENSIC_IP_CHANGE_THRESHOLD: int = 1
 
+# ──────────────────────────────────────────────
+# OSINT INTELLIGENCE LAYER
+# ──────────────────────────────────────────────
+# When True, deterministic mock data is used for demonstration (all results labeled "Mock/Demo").
+# When False and no API key exists, results return "Unavailable" with an explanation.
+MOCK_OSINT: bool = _os.getenv("MOCK_OSINT", "true").lower() == "true"
+
+# OSINT contribution to threat score (0.0 = passive context only, explainable).
+OSINT_SCORE_WEIGHT: float = float(_os.getenv("OSINT_SCORE_WEIGHT", "0.0"))
+
+OSINT_API_TIMEOUT_S: int = 8
+
+# ──────────────────────────────────────────────
+# PHISHTANK URL INTELLIGENCE
+# ──────────────────────────────────────────────
+# When True, deterministic mock data is used (labeled "Mock/Demo").
+MOCK_PHISHTANK: bool = _os.getenv("MOCK_PHISHTANK", "true").lower() == "true"
+
+# API key for live PhishTank lookups.
+PHISHTANK_API_KEY: str = _os.getenv("PHISHTANK_API_KEY", "")
+
+# Network timeout for PhishTank API requests.
+PHISHTANK_API_TIMEOUT_S: int = 8
+
 del _os
 
