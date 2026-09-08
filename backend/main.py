@@ -121,6 +121,9 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         osint_result=osint_result,
         forensic_result=forensic_result,
         phishtank_result=phishtank_result,
+        geo_records=geo_records,
+        header_intel=header_intel,
+        parsed=parsed,
     )
 
     # ── Step 11: Generate report ──────────────────────────────────
@@ -176,6 +179,50 @@ def _print_summary(report: dict) -> None:
         print("\n  🔍  Correlated Forensic Evidence:")
         for cev in report["correlated_evidence"][:5]:
             print(f"     [{cev['source']}] {cev['finding'][:110]}")
+
+    infra = report.get("infrastructure", {})
+    upstream_ip = infra.get("upstream_relay_ip")
+    if upstream_ip:
+        print(f"\n  🚀  Primary Candidate Relay : {upstream_ip}")
+    candidates = infra.get("candidate_relays", [])
+    if candidates:
+        print(f"  📌  Candidate Relays       : {len(candidates)} ranked public hop(s)")
+        for cand in candidates[:3]:
+            print(f"      - {cand['ip']} [Tier {cand['tier']}: {cand['tier_name']}] (conf: {cand['confidence']})")
+    timeline = infra.get("timeline_analysis", {})
+    if timeline:
+        tl_status = timeline.get("status", "unknown")
+        if tl_status == "skew_observed":
+            print(f"  ⏱️  Timeline Analysis       : ⚠️ SKEW OBSERVED ({len(timeline.get('anomalies', []))} anomalies)")
+        elif tl_status == "consistent":
+            print(f"  ⏱️  Timeline Analysis       : ✅ CONSISTENT ({len(timeline.get('hop_deltas', []))} hops analyzed)")
+    fp = infra.get("client_fingerprint")
+    if fp:
+        print(f"  🔍  Client Fingerprint      : {fp.get('fingerprint_summary', 'Standard')}")
+    tz_corr = infra.get("timezone_correlation")
+    if tz_corr:
+        tz_status = "⚠️  DIVERGENCE OBSERVED" if tz_corr.get("is_discrepancy") else "✅  CONSISTENT"
+        print(f"  🕒  Timezone Analysis       : {tz_status} (Date: {tz_corr.get('stated_offset')}, Relay: {tz_corr.get('relay_timezone')} {tz_corr.get('relay_offset')}, diff: {tz_corr.get('discrepancy_hours')}h, thresh: {tz_corr.get('threshold_hours', 4.0)}h)")
+
+    geos = infra.get("geolocation", [])
+    if geos:
+        print("\n  🌍  Observable Infrastructure (IPinfo):")
+        for g in geos[:3]:
+            ip = g.get("ip", "UNKNOWN")
+            country = g.get("country", "UNKNOWN")
+            region = g.get("region", "UNKNOWN")
+            city = g.get("city", "UNKNOWN")
+            asn = g.get("asn", "UNKNOWN")
+            org = g.get("organization") or g.get("org", "UNKNOWN")
+            source = g.get("source", "IPinfo")
+            print(f"     IP          : {ip}")
+            print(f"     Country     : {country}")
+            print(f"     Region      : {region}")
+            print(f"     City        : {city}")
+            print(f"     ASN         : {asn}")
+            print(f"     Organization: {org}")
+            print(f"     Source      : {source}")
+            print("     Note        : Approximate IP-based infrastructure location, not sender's physical location.")
 
     forensics = report.get("forensics", {})
     osint = forensics.get("osint")

@@ -4,6 +4,13 @@ All weights, thresholds, and toggles are here.
 No business-logic code imports this as a module; it is imported directly.
 """
 
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ──────────────────────────────────────────────
 # SIGNAL WEIGHTS  (must sum to 1.0)
 # ──────────────────────────────────────────────
@@ -122,13 +129,29 @@ PRIVATE_IP_NETWORKS = [
 ]
 
 # ──────────────────────────────────────────────
-# GEOLOCATION
+# GEOLOCATION & IPINFO
 # ──────────────────────────────────────────────
-# Free API — no key required; rate limit: 45 req/min
-GEOLOCATION_API_URL = "http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,lat,lon,isp,org,as"
-GEOLOCATION_TIMEOUT_S = 5
-# Set to True to use the live API; False uses mock/offline mode
-GEOLOCATION_LIVE = False
+import os as _os_geo
+# IPinfo API token loaded from environment (never hard-coded)
+IPINFO_TOKEN: str          = _os_geo.getenv("IPINFO_TOKEN", "")
+IPINFO_API_URL: str        = "https://ipinfo.io/{ip}/json"
+IPINFO_TIMEOUT_S: int      = int(_os_geo.getenv("IPINFO_TIMEOUT_S", "5"))
+del _os_geo
+
+# Fallback / legacy API configuration
+GEOLOCATION_API_URL        = "http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,lat,lon,isp,org,as"
+GEOLOCATION_TIMEOUT_S      = 5
+GEOLOCATION_LIVE           = False
+
+# ──────────────────────────────────────────────
+# FORENSIC ATTRIBUTION & TIMELINE HEURISTICS
+# ──────────────────────────────────────────────
+TIMEZONE_OBSERVATIONAL_DELTA_THRESHOLD_HOURS: float = 4.0
+TIMESTAMP_SKEW_TOLERANCE_SECONDS: int = 120
+FORENSIC_SCOPE_DISCLAIMER: str = (
+    "Physical attribution is outside the scope of email-header analysis "
+    "and may require additional evidence and lawful investigative processes."
+)
 
 # ──────────────────────────────────────────────
 # REPUTATION PROVIDERS  (pluggable later)

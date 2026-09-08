@@ -20,6 +20,7 @@ from header_analyzer import HeaderIntelligence
 from threat_scorer import ThreatScore
 from email_parser import ParsedEmail
 from forensic_domain_intelligence import ForensicIntelligenceResult, DomainForensicResult
+import config
 from typing import Optional
 try:
     from osint_intelligence import OSINTAnalysisResult
@@ -75,17 +76,27 @@ def generate_report(
 
     # ── Infrastructure ───────────────────────────────────────────
     geo_list = [
-        {
-            "ip":      g.ip,
-            "country": g.country,
-            "region":  g.region,
-            "city":    g.city,
-            "lat":     g.lat,
-            "lon":     g.lon,
-            "asn":     g.asn,
-            "isp":     g.isp,
-            "org":     g.org,
-            "source":  g.source,
+        g.to_dict() if hasattr(g, "to_dict") else {
+            "ip":            g.ip,
+            "country":       g.country,
+            "region":        g.region,
+            "city":          g.city,
+            "lat":           g.lat,
+            "lon":           g.lon,
+            "latitude":      getattr(g, "latitude", g.lat),
+            "longitude":     getattr(g, "longitude", g.lon),
+            "asn":           g.asn,
+            "isp":           g.isp,
+            "org":           g.org,
+            "organization":  getattr(g, "organization", g.org),
+            "postal":        getattr(g, "postal", None),
+            "timezone":      getattr(g, "timezone", None),
+            "hostname":      getattr(g, "hostname", None),
+            "network":       getattr(g, "network", None),
+            "source":        g.source,
+            "status":        getattr(g, "status", "success"),
+            "location_type": getattr(g, "location_type", "observable_infrastructure"),
+            "location_note": getattr(g, "location_note", g.forensic_note),
             "forensic_note": g.forensic_note,
         }
         for g in geo_records
@@ -113,7 +124,44 @@ def generate_report(
         for h in header_intel.relay_chain
     ]
 
+    chronological_hops_list = [
+        {
+            "hop_number": getattr(h, "hop_number", idx),
+            "from_host": h.from_host,
+            "by_host": h.by_host,
+            "ip": h.ip,
+            "provider": h.provider,
+            "is_private": getattr(h, "is_private", False),
+            "is_upstream_origin": getattr(h, "is_upstream_origin", False),
+            "raw": getattr(h, "raw", ""),
+            "timestamp_raw": getattr(h, "timestamp_raw", None),
+            "timestamp_utc": getattr(h, "timestamp_utc", None),
+            "provenance": getattr(h, "provenance", "UNKNOWN"),
+            "confidence": getattr(h, "confidence", "medium"),
+            "evidence_class": getattr(h, "evidence_class", "DERIVED"),
+        }
+        for idx, h in enumerate(getattr(header_intel, "chronological_hops", []), start=1)
+    ]
+
+    client_fp_dict = None
+    if getattr(header_intel, "client_fingerprint", None):
+        client_fp_dict = header_intel.client_fingerprint.to_dict()
+
+    timezone_analysis = None
+    if parsed and getattr(parsed, "date", None) and geo_records:
+        target_geo = next((g for g in geo_records if getattr(g, "timezone", None) and g.timezone != "UNKNOWN"), None)
+        if target_geo:
+            from evidence_correlator import correlate_timezone
+            timezone_analysis = correlate_timezone(parsed.date, target_geo.timezone)
+
     infrastructure = {
+        "forensic_scope":        getattr(config, "FORENSIC_SCOPE_DISCLAIMER", "Physical attribution is outside the scope of email-header analysis and may require additional evidence and lawful investigative processes."),
+        "upstream_relay_ip":     getattr(header_intel, "upstream_relay_ip", None),
+        "candidate_relays":      getattr(header_intel, "candidate_relays", []),
+        "timeline_analysis":     getattr(header_intel, "timeline_analysis", {}),
+        "chronological_hops":    chronological_hops_list,
+        "client_fingerprint":    client_fp_dict,
+        "timezone_correlation":  timezone_analysis,
         "x_originating_ip":      header_intel.x_originating_ip or None,
         "x_mailer":              header_intel.x_mailer or None,
         "relay_chain":           relay_chain_list,
@@ -317,6 +365,11 @@ def generate_report(
     if phishtank_result:
         forensics_section["phishtank"] = phishtank_result.to_dict()
 
+    forensic_anomalies = [
+        item for item in (correlated_evidence or [])
+        if item.get("channel") == "forensic" or str(item.get("source", "")).startswith("Forensic/")
+    ]
+
     # ── Final report ─────────────────────────────────────────────
     report: dict[str, Any] = {
         "threat_score": threat_score.threat_score,
@@ -338,6 +391,7 @@ def generate_report(
         "limitations":   all_limitations,
         
         "forensics":           forensics_section,
+        "forensic_anomalies":  forensic_anomalies,
         "correlated_evidence": correlated_evidence or [],
     }
 

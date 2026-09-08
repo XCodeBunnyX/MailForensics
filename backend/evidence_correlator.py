@@ -17,6 +17,9 @@ source attribution and cross-vector correlation synthesis.
 
 from __future__ import annotations
 
+import email.utils
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -28,15 +31,18 @@ from url_analyzer import URLAnalysis
 from attachment_analyzer import AttachmentAnalysis
 from osint_intelligence import OSINTAnalysisResult
 from forensic_domain_intelligence import ForensicIntelligenceResult
+import config
 
 
 @dataclass
 class CorrelatedEvidenceItem:
     """A single piece of correlated evidence with source attribution."""
-    source: str           # "ML", "Authentication", "URL", "IP", "Domain", "OSINT", "Cross-Vector"
+    source: str           # "ML", "Authentication", "URL", "IP", "Domain", "OSINT", "Cross-Vector", "Forensic/..."
     finding: str          # Clear factual explanation
     severity: str         # "info", "low", "medium", "high", "critical"
     details: dict[str, Any] = field(default_factory=dict)
+    channel: str = "security"          # "security" vs "forensic"
+    evidence_class: str = "DERIVED"    # "OBSERVED", "DERIVED", "HEURISTIC", "EXTERNAL_INTELLIGENCE"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,7 +50,67 @@ class CorrelatedEvidenceItem:
             "finding": self.finding,
             "severity": self.severity,
             "details": self.details,
+            "channel": self.channel,
+            "evidence_class": self.evidence_class,
         }
+
+
+def correlate_timezone(
+    date_str: str,
+    relay_timezone_str: str,
+    threshold_hours: Optional[float] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Compare stated Date header timezone against relay's geographic timezone from IPinfo.
+    Returns structured analysis dict or None if insufficient data.
+    """
+    if not date_str or not relay_timezone_str:
+        return None
+
+    if threshold_hours is None:
+        threshold_hours = getattr(config, "TIMEZONE_OBSERVATIONAL_DELTA_THRESHOLD_HOURS", 4.0)
+
+    try:
+        dt = email.utils.parsedate_to_datetime(date_str)
+        if dt.tzinfo is None:
+            return None
+        stated_offset_sec = dt.utcoffset().total_seconds()
+        stated_offset_hrs = stated_offset_sec / 3600.0
+
+        tz = ZoneInfo(relay_timezone_str)
+        relay_dt = dt.astimezone(tz)
+        relay_offset_sec = relay_dt.utcoffset().total_seconds()
+        relay_offset_hrs = relay_offset_sec / 3600.0
+
+        diff_hrs = abs(stated_offset_hrs - relay_offset_hrs)
+
+        stated_sign = "+" if stated_offset_sec >= 0 else "-"
+        stated_s = int(abs(stated_offset_sec))
+        stated_str = f"{stated_sign}{stated_s // 3600:02d}:{(stated_s % 3600) // 60:02d}"
+
+        relay_sign = "+" if relay_offset_sec >= 0 else "-"
+        relay_s = int(abs(relay_offset_sec))
+        relay_str = f"{relay_sign}{relay_s // 3600:02d}:{(relay_s % 3600) // 60:02d}"
+
+        is_discrepancy = diff_hrs > threshold_hours
+        return {
+            "stated_offset": stated_str,
+            "stated_offset_hours": stated_offset_hrs,
+            "relay_timezone": relay_timezone_str,
+            "relay_offset": relay_str,
+            "relay_offset_hours": relay_offset_hrs,
+            "discrepancy_hours": round(diff_hrs, 2),
+            "is_discrepancy": is_discrepancy,
+            "status": "divergence_observed" if is_discrepancy else "consistent",
+            "threshold_hours": threshold_hours,
+            "evidence_class": "HEURISTIC",
+            "heuristics_note": (
+                "A timezone discrepancy reflects differing configuration or geographic relaying; "
+                "it does not prove timestamp manipulation or physical sender location."
+            ),
+        }
+    except Exception:
+        return None
 
 
 def correlate_evidence(
@@ -57,6 +123,9 @@ def correlate_evidence(
     osint_result: Optional[OSINTAnalysisResult] = None,
     forensic_result: Optional[ForensicIntelligenceResult] = None,
     phishtank_result: Optional[Any] = None,
+    geo_records: Optional[list[Any]] = None,
+    header_intel: Optional[Any] = None,
+    parsed: Optional[Any] = None,
 ) -> list[dict[str, Any]]:
     """
     Correlate findings across ML, Authentication, URLs, Infrastructure, OSINT, and PhishTank.
@@ -126,6 +195,145 @@ def correlate_evidence(
             severity="medium",
             details={"records_count": len(ip_intel.records)},
         ))
+
+    # ── 4b. Geolocation / Observable Infrastructure (IPinfo) ──────
+    if geo_records:
+        for g in geo_records:
+            g_status = getattr(g, "status", "success")
+            g_country = getattr(g, "country", "UNKNOWN")
+            g_city = getattr(g, "city", "UNKNOWN")
+            g_region = getattr(g, "region", "UNKNOWN")
+            g_asn = getattr(g, "asn", "UNKNOWN")
+            g_org = getattr(g, "organization", None) or getattr(g, "org", "UNKNOWN")
+            g_ip = getattr(g, "ip", "")
+
+            if g_status == "success" and (g_country != "UNKNOWN" or g_city != "UNKNOWN"):
+                loc_parts = [p for p in [g_city, g_region, g_country] if p and p != "UNKNOWN"]
+                loc_str = ", ".join(loc_parts) if loc_parts else "an approximate location"
+                asn_org_parts = []
+                if g_asn and g_asn != "UNKNOWN":
+                    asn_org_parts.append(f"ASN: {g_asn}")
+                if g_org and g_org != "UNKNOWN":
+                    asn_org_parts.append(f"Org: {g_org}")
+                asn_org_str = f" ({', '.join(asn_org_parts)})" if asn_org_parts else ""
+
+                evidence.append(CorrelatedEvidenceItem(
+                    source="IPinfo",
+                    finding=(
+                        f"Observed mail infrastructure ({g_ip}) is geolocated to {loc_str}{asn_org_str}. "
+                        "Note: Approximate infrastructure location only, not sender's physical location."
+                    ),
+                    severity="info",
+                    details={
+                        "ip": g_ip,
+                        "country": g_country,
+                        "region": g_region,
+                        "city": g_city,
+                        "asn": g_asn,
+                        "organization": g_org,
+                        "location_type": "observable_infrastructure",
+                    },
+                ))
+
+    # ── 4c. Timezone Discrepancy Heuristic ────────────────────────
+    if parsed and getattr(parsed, "date", None) and geo_records:
+        date_str = parsed.date
+        # Pick the first geo_record with a valid timezone
+        relay_tz = None
+        target_geo = None
+        for g in geo_records:
+            tz_val = getattr(g, "timezone", None)
+            if tz_val and tz_val != "UNKNOWN":
+                relay_tz = tz_val
+                target_geo = g
+                break
+
+        if relay_tz:
+            tz_res = correlate_timezone(date_str, relay_tz)
+            if tz_res:
+                relay_ip_str = f" ({target_geo.ip})" if target_geo and getattr(target_geo, "ip", None) else ""
+                if tz_res.get("is_discrepancy"):
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Forensic/Timezone",
+                        finding=(
+                            f"Heuristic observation: Email Date header offset ({tz_res['stated_offset']}) "
+                            f"diverges by {tz_res['discrepancy_hours']}h from the earliest observable relay timezone "
+                            f"({tz_res['relay_timezone']}, {tz_res['relay_offset']}){relay_ip_str} "
+                            f"(threshold: {tz_res.get('threshold_hours', 4.0)}h). "
+                            "This may indicate upstream mail routing, automated forwarding, or client configuration differences."
+                        ),
+                        severity="info",
+                        details=tz_res,
+                        channel="forensic",
+                        evidence_class="HEURISTIC",
+                    ))
+                else:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Forensic/Timezone",
+                        finding=(
+                            f"Email Date header offset ({tz_res['stated_offset']}) is consistent with the "
+                            f"earliest observable relay timezone ({tz_res['relay_timezone']}, {tz_res['relay_offset']}){relay_ip_str}."
+                        ),
+                        severity="info",
+                        details=tz_res,
+                        channel="forensic",
+                        evidence_class="HEURISTIC",
+                    ))
+
+    # ── 4d. Client & Environment Fingerprint ──────────────────────
+    if header_intel and getattr(header_intel, "client_fingerprint", None):
+        fp = header_intel.client_fingerprint
+        if fp.mailer_category in ("Programmatic / Automated Sender", "Automated Script / Bot"):
+            evidence.append(CorrelatedEvidenceItem(
+                source="Forensic/Fingerprint",
+                finding=(
+                    f"Sending environment fingerprinted as programmatic / automated sender tool: "
+                    f"'{fp.mailer}' (MIME boundary style: {fp.mime_boundary_style})."
+                ),
+                severity="info",
+                details=fp.to_dict(),
+                channel="forensic",
+                evidence_class="HEURISTIC",
+            ))
+        elif fp.mailer_category == "Desktop Client":
+            evidence.append(CorrelatedEvidenceItem(
+                source="Forensic/Fingerprint",
+                finding=f"Sending environment fingerprinted as standard desktop MUA: '{fp.mailer}'.",
+                severity="info",
+                details=fp.to_dict(),
+                channel="forensic",
+                evidence_class="HEURISTIC",
+            ))
+
+        regional_charsets = {"windows-1251", "koi8-r", "iso-8859-5", "gb2312", "euc-kr"}
+        found_regional = regional_charsets.intersection(set(fp.charsets_detected))
+        if found_regional:
+            evidence.append(CorrelatedEvidenceItem(
+                source="Forensic/Fingerprint",
+                finding=f"Regional character set encoding observed in email headers: {', '.join(found_regional)} (forensic locale clue).",
+                severity="info",
+                details={
+                    "regional_charsets": list(found_regional),
+                    "all_charsets": fp.charsets_detected,
+                    "disclaimer": getattr(fp, "charset_disclaimer", ""),
+                },
+                channel="forensic",
+                evidence_class="HEURISTIC",
+            ))
+
+    # ── 4e. Relay Hop Timeline Analysis ───────────────────────────
+    if header_intel and getattr(header_intel, "timeline_analysis", None):
+        tl = header_intel.timeline_analysis
+        if tl.get("status") == "skew_observed":
+            for anomaly in tl.get("anomalies", []):
+                evidence.append(CorrelatedEvidenceItem(
+                    source="Forensic/Timeline",
+                    finding=f"Envelope timeline observation: {anomaly.get('description')}",
+                    severity="info",
+                    details=anomaly,
+                    channel="forensic",
+                    evidence_class="DERIVED",
+                ))
 
     # ── 5. Domain Intelligence Signal ─────────────────────────────
     if domain_intel.is_typosquat:

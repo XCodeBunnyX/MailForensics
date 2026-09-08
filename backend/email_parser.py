@@ -59,6 +59,7 @@ class ParsedEmail:
 
     # ── Parse metadata ──────────────────────────────────────────
     parse_errors: list[str]    # non-fatal issues encountered during parse
+    charsets: list[str] = field(default_factory=list)
 
 
 def _decode_part(part: Message) -> str:
@@ -167,8 +168,18 @@ def parse_email(raw_email: str) -> ParsedEmail:
     html_body = ""
     attachments: list[Attachment] = []
 
+    charsets_seen: list[str] = []
+    def _record_charset(cs: Optional[str]):
+        if cs:
+            clean = cs.lower().strip().strip("\"'")
+            if clean and clean not in charsets_seen:
+                charsets_seen.append(clean)
+
+    _record_charset(msg.get_content_charset())
+
     if msg.is_multipart():
         for part in msg.walk():
+            _record_charset(part.get_content_charset())
             ctype = part.get_content_type()
             disposition = str(part.get("Content-Disposition") or "")
 
@@ -226,4 +237,5 @@ def parse_email(raw_email: str) -> ParsedEmail:
         html_body=html_body,
         attachments=attachments,
         parse_errors=parse_errors,
+        charsets=charsets_seen,
     )
