@@ -36,6 +36,7 @@ class MLResult:
 def _load_models() -> tuple[object, object] | tuple[None, None]:
     """
     Attempt to load the TF-IDF vectorizer and SVM model from disk.
+    Supports both joblib and pickle formats.
     Returns (vectorizer, model) or (None, None) on failure.
     """
     base_dir = Path(__file__).parent
@@ -45,6 +46,17 @@ def _load_models() -> tuple[object, object] | tuple[None, None]:
     if not vec_path.exists() or not mdl_path.exists():
         return None, None
 
+    try:
+        import joblib
+        vectorizer = joblib.load(vec_path)
+        model = joblib.load(mdl_path)
+        return vectorizer, model
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback: plain pickle
     try:
         import pickle
         with open(vec_path, "rb") as f:

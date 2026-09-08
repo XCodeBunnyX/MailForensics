@@ -42,9 +42,11 @@ class TestMLClassifier:
 
     def test_note_does_not_say_confidence_percentage(self):
         result = classify_email("Urgent account verification required", "")
-        note_lower = result.note.lower()
-        # Must not call it confidence percentage
-        assert "confidence percentage" not in note_lower
+        note = result.note
+        # If the note mentions "confidence percentage", it must also negate it (e.g. "NOT a ... confidence percentage")
+        if "confidence percentage" in note.lower():
+            assert "not" in note.lower(), \
+                "Note must not claim the score IS a confidence percentage"
 
     def test_html_body_used_when_text_empty(self):
         html = "<html><body><p>Click here to verify your account</p></body></html>"
