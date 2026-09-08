@@ -29,6 +29,7 @@ from url_analyzer          import analyze_urls
 from attachment_analyzer   import analyze_attachments
 from ml_classifier         import classify_email
 from domain_intelligence   import analyze_domain
+from forensic_domain_intelligence import run_forensic_domain_analysis
 from threat_scorer         import compute_threat_score
 from report_generator      import generate_report
 
@@ -89,6 +90,12 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         header_intel=header_intel,
     )
 
+    # ── Step 10.5: Forensic domain intelligence ───────────────────
+    # Investigates historical DNS, IPs, WHOIS, and security detections
+    # for the sender domain + all URL domains. Purely additive — does
+    # not affect the threat score unless FORENSIC_HISTORY_SCORE_WEIGHT > 0.
+    forensic_result = run_forensic_domain_analysis(parsed, url_analysis)
+
     # ── Step 11: Generate report ──────────────────────────────────
     report = generate_report(
         parsed=parsed,
@@ -101,6 +108,7 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         ml=ml_result,
         domain_intel=domain_intel,
         threat_score=threat_score,
+        forensic_result=forensic_result,
     )
 
     return report

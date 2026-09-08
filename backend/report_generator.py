@@ -19,6 +19,7 @@ from domain_intelligence import DomainIntelligence
 from header_analyzer import HeaderIntelligence
 from threat_scorer import ThreatScore
 from email_parser import ParsedEmail
+from forensic_domain_intelligence import ForensicIntelligenceResult, DomainForensicResult
 
 
 def generate_report(
@@ -32,6 +33,7 @@ def generate_report(
     ml: MLResult,
     domain_intel: DomainIntelligence,
     threat_score: ThreatScore,
+    forensic_result: ForensicIntelligenceResult,
 ) -> dict[str, Any]:
     """
     Generate the final structured forensic report.
@@ -213,6 +215,83 @@ def generate_report(
     if parsed.parse_errors:
         all_limitations.extend([f"Parse warning: {e}" for e in parsed.parse_errors])
 
+    # ── Forensics ────────────────────────────────────────────
+    def _serialize_domain_forensic(d: DomainForensicResult) -> dict:
+        return {
+            "domain":      d.domain,
+            "data_source": d.data_source,
+            "current_dns": {
+                "A":     d.current_dns.A,
+                "AAAA":  d.current_dns.AAAA,
+                "MX":    d.current_dns.MX,
+                "NS":    d.current_dns.NS,
+                "CNAME": d.current_dns.CNAME,
+                "TXT":   d.current_dns.TXT,
+            },
+            "historical_dns": {
+                rtype: [
+                    {
+                        "value":      r.value,
+                        "first_seen": r.first_seen,
+                        "last_seen":  r.last_seen,
+                    }
+                    for r in records
+                ]
+                for rtype, records in d.historical_dns.items()
+            },
+            "historical_ips": [
+                {"ip": h.ip, "first_seen": h.first_seen, "last_seen": h.last_seen}
+                for h in d.historical_ips
+            ],
+            "whois_history": [
+                {
+                    "registrar":   w.registrar,
+                    "registered":  w.registered,
+                    "updated":     w.updated,
+                    "expires":     w.expires,
+                    "nameservers": w.nameservers,
+                }
+                for w in d.whois_history
+            ],
+            "security_history": {
+                "previously_detected": d.security_history.previously_detected,
+                "currently_detected":  d.security_history.currently_detected,
+                "detections": [
+                    {
+                        "date":     det.date,
+                        "category": det.category,
+                        "provider": det.provider,
+                    }
+                    for det in d.security_history.detections
+                ],
+            },
+            "timeline": [
+                {
+                    "date":   e.date,
+                    "event":  e.event,
+                    "value":  e.value,
+                    "source": e.source,
+                }
+                for e in d.timeline
+            ],
+            "evidence": [
+                {
+                    "type":        ev.type,
+                    "severity":    ev.severity,
+                    "description": ev.description,
+                    "evidence":    ev.evidence,
+                    "source":      ev.source,
+                }
+                for ev in d.evidence
+            ],
+            "limitations": d.limitations,
+        }
+
+    forensics_section: dict[str, Any] = {
+        "domains":     [_serialize_domain_forensic(d) for d in forensic_result.domains],
+        "limitations": forensic_result.limitations,
+    }
+
     # ── Final report ─────────────────────────────────────────────
     report: dict[str, Any] = {
         "threat_score": threat_score.threat_score,
@@ -232,6 +311,8 @@ def generate_report(
         "sub_scores":    threat_score.sub_scores,
         "weights_used":  threat_score.weights_used,
         "limitations":   all_limitations,
+        
+        "forensics":     forensics_section,
     }
 
     return report

@@ -142,3 +142,37 @@ USE_LIVE_DOMAIN_REPUTATION = False   # plug in VirusTotal / Whois etc.
 EVIDENCE_IMPACT_HIGH   = 70   # sub-score ≥ this → HIGH impact
 EVIDENCE_IMPACT_MEDIUM = 40   # sub-score ≥ this → MEDIUM impact
                                # below → LOW impact
+
+# ──────────────────────────────────────────────
+# FORENSIC DOMAIN INTELLIGENCE
+# ──────────────────────────────────────────────
+import os as _os
+
+# Set MOCK_THREAT_INTEL=false and supply an API key to use a real provider.
+# Default: mock/demo mode (no API key required).
+FORENSIC_MOCK_MODE: bool = _os.getenv("MOCK_THREAT_INTEL", "true").lower() == "true"
+
+# API keys — loaded from environment, never hard-coded.
+VIRUSTOTAL_API_KEY: str     = _os.getenv("VIRUSTOTAL_API_KEY", "")
+SECURITYTRAILS_API_KEY: str = _os.getenv("SECURITYTRAILS_API_KEY", "")
+
+# Preferred real provider when FORENSIC_MOCK_MODE=false.
+# Options: "virustotal" | "securitytrails"
+FORENSIC_PROVIDER: str = _os.getenv("FORENSIC_PROVIDER", "virustotal").lower()
+
+# Forensic history score contribution to overall threat score.
+# 0.0 = forensic context only (default, recommended).
+# Raise to e.g. 0.05 to allow historical detections to affect the score.
+FORENSIC_HISTORY_SCORE_WEIGHT: float = float(
+    _os.getenv("FORENSIC_HISTORY_SCORE_WEIGHT", "0.0")
+)
+
+# Network timeouts
+FORENSIC_DNS_TIMEOUT_S: int = 5
+FORENSIC_API_TIMEOUT_S: int = 8
+
+# Minimum historical IP change count to emit an infrastructure_change evidence item.
+FORENSIC_IP_CHANGE_THRESHOLD: int = 1
+
+del _os
+
