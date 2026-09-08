@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import config
+from . import config
 
 # ── In-memory session cache ──────────────────────────────────────
 # Caches IP lookups during email analysis to prevent duplicate API requests.

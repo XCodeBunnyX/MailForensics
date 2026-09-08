@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import json
 import pytest
 from pathlib import Path
-from main import analyze_email
+from ..main import analyze_email
 
 SAMPLE_DIR = Path(__file__).parent.parent / "sample_emails"
 

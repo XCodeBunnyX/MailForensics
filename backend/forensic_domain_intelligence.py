@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
-import config
+from . import config
 
 # ═══════════════════════════════════════════════════════════════════
 # DATA CLASSES
@@ -177,7 +177,7 @@ class MockDomainIntelligenceProvider(DomainIntelligenceProvider):
         return "Mock/Demo"
 
     def get_forensic_data(self, domain: str) -> dict[str, Any]:
-        from mock_data.forensic_domain_data import get_mock_forensic_data
+        from .mock_data.forensic_domain_data import get_mock_forensic_data
         data, found = get_mock_forensic_data(domain)
         if not found:
             data["_limitations"] = [

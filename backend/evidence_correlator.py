@@ -23,15 +23,15 @@ from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ml_classifier import MLResult
-from authentication_analyzer import AuthResult
-from ip_intelligence import IPIntelligence
-from domain_intelligence import DomainIntelligence
-from url_analyzer import URLAnalysis
-from attachment_analyzer import AttachmentAnalysis
-from osint_intelligence import OSINTAnalysisResult
-from forensic_domain_intelligence import ForensicIntelligenceResult
-import config
+from .ml_classifier import MLResult
+from .authentication_analyzer import AuthResult
+from .ip_intelligence import IPIntelligence
+from .domain_intelligence import DomainIntelligence
+from .url_analyzer import URLAnalysis
+from .attachment_analyzer import AttachmentAnalysis
+from .osint_intelligence import OSINTAnalysisResult
+from .forensic_domain_intelligence import ForensicIntelligenceResult
+from . import config
 
 
 @dataclass

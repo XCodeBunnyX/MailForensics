@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
-from email_parser import parse_email, ParsedEmail
+from ..email_parser import parse_email, ParsedEmail
 
 
 SIMPLE_EMAIL = """\

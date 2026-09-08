@@ -19,14 +19,14 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-import config
-from authentication_analyzer import AuthResult
-from ip_intelligence import IPIntelligence
-from url_analyzer import URLAnalysis
-from attachment_analyzer import AttachmentAnalysis
-from ml_classifier import MLResult
-from domain_intelligence import DomainIntelligence
-from header_analyzer import HeaderIntelligence
+from . import config
+from .authentication_analyzer import AuthResult
+from .ip_intelligence import IPIntelligence
+from .url_analyzer import URLAnalysis
+from .attachment_analyzer import AttachmentAnalysis
+from .ml_classifier import MLResult
+from .domain_intelligence import DomainIntelligence
+from .header_analyzer import HeaderIntelligence
 
 
 @dataclass

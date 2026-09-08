@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import config
-from email_parser import ParsedEmail
+from . import config
+from .email_parser import ParsedEmail
 
 
 @dataclass

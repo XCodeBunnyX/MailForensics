@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
-from url_analyzer import analyze_urls, _analyze_single_url
+from ..url_analyzer import analyze_urls, _analyze_single_url
 
 
 class TestURLAnalyzer:

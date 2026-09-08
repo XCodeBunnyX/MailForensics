@@ -20,9 +20,9 @@ import urllib.error
 from unittest.mock import patch, MagicMock
 import pytest
 
-import config
-from ioc_extractor import extract_iocs, IOCBundle
-from osint_intelligence import (
+from .. import config
+from ..ioc_extractor import extract_iocs, IOCBundle
+from ..osint_intelligence import (
     MockOSINTProvider,
     VirusTotalOSINTProvider,
     UnavailableOSINTProvider,
@@ -30,9 +30,9 @@ from osint_intelligence import (
     run_osint_analysis,
     NormalizedOSINTRecord,
 )
-from evidence_correlator import correlate_evidence
-from email_parser import parse_email
-from main import analyze_email
+from ..evidence_correlator import correlate_evidence
+from ..email_parser import parse_email
+from ..main import analyze_email
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -248,7 +248,7 @@ class TestIOCExtraction:
             "Or here: http://hdfcbank-secure.co.in/reset\r\n"
         )
         parsed = parse_email(raw)
-        from url_analyzer import analyze_urls
+        from ..url_analyzer import analyze_urls
         urls = analyze_urls(parsed.text_body, parsed.html_body)
 
         bundle = extract_iocs(parsed, url_analysis=urls)
@@ -265,7 +265,7 @@ class TestIOCExtraction:
             "Body"
         )
         parsed = parse_email(raw)
-        from ip_intelligence import analyze_ips
+        from ..ip_intelligence import analyze_ips
         ip_intel = analyze_ips(parsed)
 
         bundle = extract_iocs(parsed, ip_intel=ip_intel)

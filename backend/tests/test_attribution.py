@@ -15,9 +15,9 @@ import email.message
 from datetime import datetime, timezone
 import pytest
 
-import config
-from email_parser import ParsedEmail, parse_email
-from header_analyzer import (
+from .. import config
+from ..email_parser import ParsedEmail, parse_email
+from ..header_analyzer import (
     analyze_headers,
     _extract_client_fingerprint,
     _extract_received_timestamp,
@@ -27,16 +27,16 @@ from header_analyzer import (
     ClientFingerprint,
     RelayHop,
 )
-from evidence_correlator import correlate_timezone, correlate_evidence
-from geolocation import GeoRecord, geolocate_ips, clear_geo_cache
-from ml_classifier import MLResult
-from authentication_analyzer import AuthResult
-from ip_intelligence import IPIntelligence
-from domain_intelligence import DomainIntelligence
-from url_analyzer import URLAnalysis
-from attachment_analyzer import AttachmentAnalysis
-from report_generator import generate_report
-from threat_scorer import ThreatScore, compute_threat_score
+from ..evidence_correlator import correlate_timezone, correlate_evidence
+from ..geolocation import GeoRecord, geolocate_ips, clear_geo_cache
+from ..ml_classifier import MLResult
+from ..authentication_analyzer import AuthResult
+from ..ip_intelligence import IPIntelligence
+from ..domain_intelligence import DomainIntelligence
+from ..url_analyzer import URLAnalysis
+from ..attachment_analyzer import AttachmentAnalysis
+from ..report_generator import generate_report
+from ..threat_scorer import ThreatScore, compute_threat_score
 
 
 # ── 1. IPv4 and IPv6 Validation Tests ──────────────────────────────

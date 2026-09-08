@@ -19,23 +19,27 @@ import sys
 from pathlib import Path
 from typing import Any
 
+if __name__ == "__main__" and not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = "backend"
+
 # ── Analysis modules ─────────────────────────────────────────────
-from email_parser          import parse_email
-from header_analyzer       import analyze_headers
-from authentication_analyzer import analyze_authentication
-from ip_intelligence       import analyze_ips
-from geolocation           import geolocate_ips
-from url_analyzer          import analyze_urls
-from attachment_analyzer   import analyze_attachments
-from ml_classifier         import classify_email
-from domain_intelligence   import analyze_domain
-from forensic_domain_intelligence import run_forensic_domain_analysis
-from ioc_extractor         import extract_iocs
-from osint_intelligence    import run_osint_analysis
-from evidence_correlator   import correlate_evidence
-from phish_tank            import check_urls_phishtank
-from threat_scorer         import compute_threat_score
-from report_generator      import generate_report
+from .email_parser import parse_email
+from .header_analyzer import analyze_headers
+from .authentication_analyzer import analyze_authentication
+from .ip_intelligence import analyze_ips
+from .geolocation import geolocate_ips
+from .url_analyzer import analyze_urls
+from .attachment_analyzer import analyze_attachments
+from .ml_classifier import classify_email
+from .domain_intelligence import analyze_domain
+from .forensic_domain_intelligence import run_forensic_domain_analysis
+from .ioc_extractor import extract_iocs
+from .osint_intelligence import run_osint_analysis
+from .evidence_correlator import correlate_evidence
+from .phish_tank import check_urls_phishtank
+from .threat_scorer import compute_threat_score
+from .report_generator import generate_report
 
 
 def analyze_email(raw_email: str) -> dict[str, Any]:
@@ -275,3 +279,11 @@ if __name__ == "__main__":
     else:
         _print_summary(result)
         print("Tip: run with --pretty for full JSON report.\n")
+
+
+def __getattr__(name: str):
+    """Allow uvicorn main:app to seamlessly load the FastAPI app from api.py."""
+    if name == "app":
+        from .api import app
+        return app
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

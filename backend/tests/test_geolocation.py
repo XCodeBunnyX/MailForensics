@@ -22,8 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import config
-from geolocation import (
+from .. import config
+from ..geolocation import (
     GeoRecord,
     clear_geo_cache,
     geolocate_ips,
@@ -31,13 +31,13 @@ from geolocation import (
     get_ip_geolocation_record,
     is_public_ip,
 )
-from evidence_correlator import correlate_evidence
-from ml_classifier import MLResult
-from authentication_analyzer import AuthResult
-from ip_intelligence import IPIntelligence, IPRecord
-from domain_intelligence import DomainIntelligence
-from url_analyzer import URLAnalysis
-from attachment_analyzer import AttachmentAnalysis
+from ..evidence_correlator import correlate_evidence
+from ..ml_classifier import MLResult
+from ..authentication_analyzer import AuthResult
+from ..ip_intelligence import IPIntelligence, IPRecord
+from ..domain_intelligence import DomainIntelligence
+from ..url_analyzer import URLAnalysis
+from ..attachment_analyzer import AttachmentAnalysis
 
 
 @pytest.fixture(autouse=True)

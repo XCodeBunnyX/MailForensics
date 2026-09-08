@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from typing import Optional
 
-from email_parser import ParsedEmail
-from url_analyzer import URLAnalysis
-from ip_intelligence import IPIntelligence
+from .email_parser import ParsedEmail
+from .url_analyzer import URLAnalysis
+from .ip_intelligence import IPIntelligence
 
 
 @dataclass

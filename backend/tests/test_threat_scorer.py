@@ -4,14 +4,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
-from authentication_analyzer import AuthResult
-from ip_intelligence import IPIntelligence, IPRecord
-from url_analyzer import URLAnalysis
-from attachment_analyzer import AttachmentAnalysis
-from ml_classifier import MLResult
-from domain_intelligence import DomainIntelligence
-from header_analyzer import HeaderIntelligence, RelayHop
-from threat_scorer import compute_threat_score, ThreatScore
+from ..authentication_analyzer import AuthResult
+from ..ip_intelligence import IPIntelligence, IPRecord
+from ..url_analyzer import URLAnalysis
+from ..attachment_analyzer import AttachmentAnalysis
+from ..ml_classifier import MLResult
+from ..domain_intelligence import DomainIntelligence
+from ..header_analyzer import HeaderIntelligence, RelayHop
+from ..threat_scorer import compute_threat_score, ThreatScore
 
 
 def _make_auth(spf="UNKNOWN", dkim="UNKNOWN", dmarc="UNKNOWN") -> AuthResult:
@@ -132,8 +132,8 @@ class TestThreatScorer:
 
     def test_verdict_critical_for_high_score(self):
         # Drive ALL six signals high to push weighted score above 70
-        from url_analyzer import URLFinding
-        from attachment_analyzer import AttachmentFinding
+        from ..url_analyzer import URLFinding
+        from ..attachment_analyzer import AttachmentFinding
 
         # High-risk URL analysis
         bad_url = URLFinding(

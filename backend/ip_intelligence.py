@@ -18,9 +18,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-import config
-from email_parser import ParsedEmail
-from mock_data.ip_reputation import get_ip_reputation
+from . import config
+from .email_parser import ParsedEmail
+from .mock_data.ip_reputation import get_ip_reputation
 
 # ── IP extraction regex ──────────────────────────────────────────
 _IPV4_PATTERN = re.compile(

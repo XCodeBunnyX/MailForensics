@@ -26,10 +26,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import config
-from ioc_extractor import IOCBundle
-from mock_data.osint_mock_data import get_mock_ip_osint, get_mock_url_osint
-from forensic_domain_intelligence import (
+from . import config
+from .ioc_extractor import IOCBundle
+from .mock_data.osint_mock_data import get_mock_ip_osint, get_mock_url_osint
+from .forensic_domain_intelligence import (
     DomainForensicResult,
     ForensicIntelligenceResult,
     get_forensic_domain_intel,

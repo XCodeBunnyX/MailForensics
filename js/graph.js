@@ -23,32 +23,50 @@ class ThreatGraph {
     nodes.push({ id: 'email', label: 'Email', type: 'email', size: 28, x: this.width / 2, y: this.height / 2 });
 
     // Sender
-    const senderFrom = this.result.sender.from.replace(/.*<(.+)>/, '$1').trim();
-    nodes.push({ id: 'sender', label: senderFrom.length > 30 ? senderFrom.slice(0,27)+'...' : senderFrom, type: 'sender', size: 20 });
+    const rawFrom = this.result.email?.from || this.result.sender?.from || 'Unknown Sender';
+    const senderFrom = rawFrom.replace(/.*<(.+)>/, '$1').trim();
+    nodes.push({ id: 'sender', label: senderFrom.length > 30 ? senderFrom.slice(0, 27) + '...' : senderFrom, type: 'sender', size: 20 });
     links.push({ source: 'sender', target: 'email', label: 'From', risk: 'critical' });
 
     // Reply-To
-    if (this.result.sender.replyTo && this.result.sender.replyTo !== 'N/A') {
-      nodes.push({ id: 'replyto', label: this.result.sender.replyTo.length > 30 ? this.result.sender.replyTo.slice(0,27)+'...' : this.result.sender.replyTo, type: 'replyto', size: 16 });
+    const replyTo = this.result.email?.replyTo || this.result.sender?.replyTo;
+    if (replyTo && replyTo !== 'N/A' && replyTo !== 'Not available') {
+      nodes.push({ id: 'replyto', label: replyTo.length > 30 ? replyTo.slice(0, 27) + '...' : replyTo, type: 'replyto', size: 16 });
       links.push({ source: 'email', target: 'replyto', label: 'Reply-To', risk: 'high' });
     }
 
-    // IPs
-    this.result.ips.slice(0, 4).forEach((ip, i) => {
+    // Observable Infrastructure IPs
+    const ips = (this.result.candidateRelays?.map(c => c.ip) || this.result.geolocation?.map(g => g.ip) || this.result.ips || [])
+      .filter(Boolean)
+      .slice(0, 4);
+
+    ips.forEach((ip) => {
+      const geo = (this.result.geolocation || this.result.geoResults || []).find(g => g.ip === ip);
       nodes.push({ id: 'ip_' + ip, label: ip, type: 'ip', size: 14 });
-      links.push({ source: 'email', target: 'ip_' + ip, label: 'Origin IP', risk: this.result.geoResults.find(g => g.ip === ip)?.risk || 'medium' });
+      links.push({ source: 'email', target: 'ip_' + ip, label: 'Observable Hop IP', risk: geo?.risk || 'medium' });
     });
 
     // Domains
-    this.result.domains.slice(0, 3).forEach((d, i) => {
-      nodes.push({ id: 'domain_' + d, label: d.length > 25 ? d.slice(0,22)+'...' : d, type: 'domain', size: 14 });
+    const domains = [];
+    if (this.result.domain?.domain && this.result.domain.domain !== 'Not available') {
+      domains.push(this.result.domain.domain);
+    }
+    (this.result.urls || []).forEach(u => {
+      const d = typeof u === 'string' ? u.replace(/^https?:\/\//, '').split('/')[0] : u.domain;
+      if (d && !domains.includes(d) && domains.length < 3) domains.push(d);
+    });
+
+    domains.slice(0, 3).forEach((d) => {
+      nodes.push({ id: 'domain_' + d, label: d.length > 25 ? d.slice(0, 22) + '...' : d, type: 'domain', size: 14 });
       links.push({ source: 'email', target: 'domain_' + d, label: 'Domain', risk: 'high' });
     });
 
     // Attachments
-    this.result.attachments.forEach((a, i) => {
-      nodes.push({ id: 'attach_' + i, label: a.name.length > 20 ? a.name.slice(0,17)+'...' : a.name, type: 'attachment', size: 14 });
-      links.push({ source: 'email', target: 'attach_' + i, label: 'Attachment', risk: a.risk });
+    const attachments = this.result.attachments || [];
+    attachments.forEach((a, i) => {
+      const name = a.filename || a.name || `Attachment ${i + 1}`;
+      nodes.push({ id: 'attach_' + i, label: name.length > 20 ? name.slice(0, 17) + '...' : name, type: 'attachment', size: 14 });
+      links.push({ source: 'email', target: 'attach_' + i, label: 'Attachment', risk: a.riskScore >= 60 ? 'critical' : a.riskScore >= 30 ? 'high' : 'low' });
     });
 
     this._render(nodes, links, container);

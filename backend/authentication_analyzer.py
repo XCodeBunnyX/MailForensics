@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from email_parser import ParsedEmail
+from .email_parser import ParsedEmail
 
 # ── Valid result tokens ──────────────────────────────────────────
 _VALID_RESULTS = {

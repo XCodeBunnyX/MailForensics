@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest
 from unittest.mock import patch, MagicMock
 
-from forensic_domain_intelligence import (
+from .. import forensic_domain_intelligence
+from ..forensic_domain_intelligence import (
     MockDomainIntelligenceProvider,
     _UnavailableProvider,
     _normalize,
@@ -357,7 +358,7 @@ class TestDuplicateDomainHandling:
             return original_get(self, domain)
 
         with patch.object(MockDomainIntelligenceProvider, "get_forensic_data", counting_get):
-            with patch("forensic_domain_intelligence.config") as mock_cfg:
+            with patch.object(forensic_domain_intelligence, "config") as mock_cfg:
                 mock_cfg.FORENSIC_MOCK_MODE = True
                 result = run_forensic_domain_analysis(parsed, url_a)
 
@@ -506,14 +507,14 @@ class TestNoFabricatedData:
 class TestEndToEndForensicsIntegration:
     def test_phishing_email_has_forensics_key(self):
         from pathlib import Path
-        from main import analyze_email
+        from ..main import analyze_email
         eml = (Path(__file__).parent.parent / "sample_emails" / "phishing_bank.eml").read_text()
         result = analyze_email(eml)
         assert "forensics" in result
 
     def test_forensics_has_domains_list(self):
         from pathlib import Path
-        from main import analyze_email
+        from ..main import analyze_email
         eml = (Path(__file__).parent.parent / "sample_emails" / "phishing_bank.eml").read_text()
         result = analyze_email(eml)
         assert "domains" in result["forensics"]
@@ -521,7 +522,7 @@ class TestEndToEndForensicsIntegration:
 
     def test_each_domain_has_required_keys(self):
         from pathlib import Path
-        from main import analyze_email
+        from ..main import analyze_email
         eml = (Path(__file__).parent.parent / "sample_emails" / "phishing_bank.eml").read_text()
         result = analyze_email(eml)
         required = [
@@ -535,7 +536,7 @@ class TestEndToEndForensicsIntegration:
 
     def test_forensics_does_not_break_existing_keys(self):
         from pathlib import Path
-        from main import analyze_email
+        from ..main import analyze_email
         eml = (Path(__file__).parent.parent / "sample_emails" / "legitimate.eml").read_text()
         result = analyze_email(eml)
         # All original keys still present
@@ -547,7 +548,7 @@ class TestEndToEndForensicsIntegration:
     def test_phishing_email_forensics_is_json_serializable(self):
         import json
         from pathlib import Path
-        from main import analyze_email
+        from ..main import analyze_email
         eml = (Path(__file__).parent.parent / "sample_emails" / "phishing_bank.eml").read_text()
         result = analyze_email(eml)
         serialized = json.dumps(result["forensics"], ensure_ascii=False)
@@ -555,7 +556,7 @@ class TestEndToEndForensicsIntegration:
 
     def test_legitimate_email_forensics_has_clean_domain(self):
         from pathlib import Path
-        from main import analyze_email
+        from ..main import analyze_email
         eml = (Path(__file__).parent.parent / "sample_emails" / "legitimate.eml").read_text()
         result = analyze_email(eml)
         domains = result["forensics"]["domains"]

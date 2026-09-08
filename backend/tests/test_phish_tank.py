@@ -17,8 +17,8 @@ import urllib.error
 from unittest.mock import patch, MagicMock
 import pytest
 
-import config
-from phish_tank import (
+from .. import config
+from ..phish_tank import (
     MockPhishTankProvider,
     LivePhishTankProvider,
     UnavailablePhishTankProvider,
@@ -214,7 +214,7 @@ class TestPipelineIntegration:
         if not sample.exists():
             pytest.skip("Sample email file not found")
 
-        from main import analyze_email
+        from ..main import analyze_email
         raw = sample.read_text(encoding="utf-8", errors="replace")
         report = analyze_email(raw)
 
@@ -235,7 +235,7 @@ class TestPipelineIntegration:
         if not sample.exists():
             pytest.skip("Sample email file not found")
 
-        from main import analyze_email
+        from ..main import analyze_email
         raw = sample.read_text(encoding="utf-8", errors="replace")
         report = analyze_email(raw)
 

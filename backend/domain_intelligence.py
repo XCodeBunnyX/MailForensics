@@ -16,8 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-import config
-from mock_data.domain_reputation import get_domain_reputation
+from . import config
+from .mock_data.domain_reputation import get_domain_reputation
 
 
 # ── Well-known legitimate domains for typosquat comparison ───────

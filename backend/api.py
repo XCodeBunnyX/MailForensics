@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import logging
 import traceback
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from main import analyze_email
+from .main import analyze_email
 
 # ── Logging (no raw email bodies, no secrets) ─────────────────────
 logger = logging.getLogger("gmailguard.api")
@@ -36,13 +39,21 @@ ALLOWED_CONTENT_TYPES = {
     "text/plain",
 }
 
+# ── Request Models ────────────────────────────────────────────────
+class AnalyzeTextRequest(BaseModel):
+    raw_email: str | None = None
+    email_text: str | None = None
+
+    def get_text(self) -> str:
+        return self.raw_email or self.email_text or ""
+
 # ── FastAPI Application ───────────────────────────────────────────
 app = FastAPI(
     title="GmailGuard",
     description=(
         "AI-Powered Email Threat Detection, GeoLocation & Forensic Intelligence Platform.\n\n"
-        "Upload a raw `.eml` file and receive a comprehensive threat analysis report "
-        "covering authentication, infrastructure, URL intelligence, PhishTank, "
+        "Upload a raw `.eml` file or submit raw email text and receive a comprehensive threat "
+        "analysis report covering authentication, infrastructure, URL intelligence, PhishTank, "
         "NLP phishing classification, OSINT, and forensic evidence correlation."
     ),
     version="1.0.0",
@@ -54,15 +65,18 @@ app = FastAPI(
 _CORS_ORIGINS: list[str] = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://localhost:8000",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -168,6 +182,57 @@ async def analyze_email_endpoint(
         )
 
     return report
+
+
+@app.post(
+    "/analyze-text",
+    response_model=dict[str, Any],
+    summary="Analyze raw RFC 5322 email string",
+    description="Accepts a raw RFC 5322 email string as JSON payload and returns the full threat analysis report.",
+    response_description="Complete GmailGuard threat analysis report",
+)
+async def analyze_text_endpoint(payload: AnalyzeTextRequest) -> dict[str, Any]:
+    """Accept raw email string directly in JSON body, run pipeline, return JSON."""
+    raw_email = payload.get_text().strip()
+    if not raw_email:
+        raise _safe_error("Email content is empty.")
+
+    if len(raw_email.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise _safe_error(
+            f"Payload too large. Maximum allowed size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+            status_code=413,
+        )
+
+    try:
+        report = analyze_email(raw_email)
+    except Exception as exc:
+        logger.error("Analysis pipeline error: %s", type(exc).__name__, exc_info=True)
+        raise _safe_error(
+            "Internal analysis error. The email could not be processed.",
+            status_code=500,
+        )
+
+    return report
+
+
+# ── Static Frontend Mount ─────────────────────────────────────────
+FRONTEND_DIR = Path(__file__).resolve().parent.parent
+
+if (FRONTEND_DIR / "css").exists():
+    app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
+if (FRONTEND_DIR / "js").exists():
+    app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
+if (FRONTEND_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+async def serve_index():
+    """Serve the MailForensics web dashboard directly from FastAPI."""
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return JSONResponse({"status": "ok", "service": "GmailGuard"})
 
 
 # ── Global exception handler (catch-all safety net) ───────────────

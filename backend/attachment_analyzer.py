@@ -16,8 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-import config
-from email_parser import Attachment
+from . import config
+from .email_parser import Attachment
 
 
 # ── Magic byte signatures for executable detection ───────────────

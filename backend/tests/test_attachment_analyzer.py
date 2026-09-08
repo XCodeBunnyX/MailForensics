@@ -4,8 +4,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
-from email_parser import Attachment
-from attachment_analyzer import analyze_attachments
+from ..email_parser import Attachment
+from ..attachment_analyzer import analyze_attachments
 
 
 def _make_att(filename: str, content_type: str = "application/octet-stream",

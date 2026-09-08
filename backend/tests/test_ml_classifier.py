@@ -4,7 +4,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
-from ml_classifier import classify_email, MLResult
+from ..ml_classifier import classify_email, MLResult
 
 
 class TestMLClassifier:

@@ -20,7 +20,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from api import app
+from .. import api
+from ..api import app
 
 client = TestClient(app)
 
@@ -172,7 +173,7 @@ class TestAnalysisFailure:
 
     def test_pipeline_exception_returns_500(self):
         """If the analysis pipeline throws, the API returns 500 without leaking internals."""
-        with patch("api.analyze_email", side_effect=RuntimeError("kaboom")):
+        with patch.object(api, "analyze_email", side_effect=RuntimeError("kaboom")):
             resp = client.post(
                 "/analyze",
                 files={"file": ("crash.eml", b"From: x@y.com\nSubject: test\n\nBody", "message/rfc822")},
@@ -238,3 +239,34 @@ class TestCORS:
             },
         )
         assert resp.headers.get("access-control-allow-origin") is None
+
+
+# ── 8. Text Analysis & Static Mount Tests ────────────────────────
+
+class TestAnalyzeTextEndpoint:
+
+    def test_analyze_text_valid_email(self, phishing_eml):
+        email_str = phishing_eml.decode("utf-8", errors="replace")
+        resp = client.post(
+            "/analyze-text",
+            json={"raw_email": email_str},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "threat_score" in data
+        assert "verdict" in data
+        assert "infrastructure" in data
+        assert "candidate_relays" in data["infrastructure"]
+
+    def test_analyze_text_empty_payload(self):
+        resp = client.post(
+            "/analyze-text",
+            json={"raw_email": ""},
+        )
+        assert resp.status_code == 400
+        assert "empty" in resp.json()["detail"].lower()
+
+    def test_serve_index_endpoint(self):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "GmailGuard" in resp.text or "MailForensics" in resp.text

@@ -17,8 +17,8 @@ import urllib.parse
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
-import config
-from mock_data.domain_reputation import get_domain_reputation
+from . import config
+from .mock_data.domain_reputation import get_domain_reputation
 
 
 # ── URL extraction regexes ───────────────────────────────────────

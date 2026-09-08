@@ -9,21 +9,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from authentication_analyzer import AuthResult
-from ip_intelligence import IPIntelligence
-from geolocation import GeoRecord
-from url_analyzer import URLAnalysis
-from attachment_analyzer import AttachmentAnalysis
-from ml_classifier import MLResult
-from domain_intelligence import DomainIntelligence
-from header_analyzer import HeaderIntelligence
-from threat_scorer import ThreatScore
-from email_parser import ParsedEmail
-from forensic_domain_intelligence import ForensicIntelligenceResult, DomainForensicResult
-import config
+from .authentication_analyzer import AuthResult
+from .ip_intelligence import IPIntelligence
+from .geolocation import GeoRecord
+from .url_analyzer import URLAnalysis
+from .attachment_analyzer import AttachmentAnalysis
+from .ml_classifier import MLResult
+from .domain_intelligence import DomainIntelligence
+from .header_analyzer import HeaderIntelligence
+from .threat_scorer import ThreatScore
+from .email_parser import ParsedEmail
+from .forensic_domain_intelligence import ForensicIntelligenceResult, DomainForensicResult
+from . import config
 from typing import Optional
 try:
-    from osint_intelligence import OSINTAnalysisResult
+    from .osint_intelligence import OSINTAnalysisResult
 except ImportError:
     OSINTAnalysisResult = Any
 
@@ -151,7 +151,7 @@ def generate_report(
     if parsed and getattr(parsed, "date", None) and geo_records:
         target_geo = next((g for g in geo_records if getattr(g, "timezone", None) and g.timezone != "UNKNOWN"), None)
         if target_geo:
-            from evidence_correlator import correlate_timezone
+            from .evidence_correlator import correlate_timezone
             timezone_analysis = correlate_timezone(parsed.date, target_geo.timezone)
 
     infrastructure = {
