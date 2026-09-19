@@ -31,6 +31,7 @@ from .ip_intelligence import analyze_ips
 from .geolocation import geolocate_ips
 from .url_analyzer import analyze_urls
 from .attachment_analyzer import analyze_attachments
+from .attachment_content_analyzer import analyze_attachment_contents
 from .ml_classifier import classify_email
 from .domain_intelligence import analyze_domain
 from .forensic_domain_intelligence import run_forensic_domain_analysis
@@ -38,6 +39,7 @@ from .ioc_extractor import extract_iocs
 from .osint_intelligence import run_osint_analysis
 from .evidence_correlator import correlate_evidence
 from .phish_tank import check_urls_phishtank
+from .url_sandbox import analyze_urls_dynamic
 from .threat_scorer import compute_threat_score
 from .report_generator import generate_report
 
@@ -75,17 +77,44 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
     # ── Step 5: Geolocation (forensic context only) ───────────────
     geo_records = geolocate_ips(ip_intel.public_ips)
 
-    # ── Step 6: URL analysis ─────────────────────────────────────
-    url_analysis = analyze_urls(parsed.text_body, parsed.html_body)
-
-    # ── Step 7: Attachment analysis ───────────────────────────────
+    # ── Step 7: Attachment static analysis ───────────────────────
     att_analysis = analyze_attachments(parsed.attachments)
+
+    # ── Step 7.5: Deep Attachment Content Analysis ───────────────
+    # Safely inspects the internal contents of documents (PDF, text, archives).
+    # Extracts text, links, actions, forms, JavaScript, embedded files, and metadata.
+    # Detects password-protection / encryption without attempting bypass.
+    att_content_analysis = analyze_attachment_contents(parsed.attachments)
+    att_extracted_urls = att_content_analysis.get_all_urls()
+
+    # ── Step 6: URL analysis ─────────────────────────────────────
+    # Combines URLs from email body text, HTML, and attachments so all links
+    # enter the exact same reputation and intelligence pipeline without duplication.
+    url_analysis = analyze_urls(
+        parsed.text_body,
+        parsed.html_body,
+        additional_urls=att_extracted_urls,
+    )
+
+    # Attach correlated URL reputation back into the attachment findings
+    att_content_analysis.attach_url_intelligence(url_analysis.findings)
 
     # ── Step 8: ML / NLP classification ──────────────────────────
     ml_result = classify_email(parsed.text_body, parsed.html_body)
 
     # ── Step 9: Domain intelligence ──────────────────────────────
     domain_intel = analyze_domain(parsed.sender_domain)
+
+    # ── Step 9.5: Observable IOC Extraction ──────────────────────
+    ioc_bundle = extract_iocs(parsed, url_analysis=url_analysis, ip_intel=ip_intel)
+
+    # ── Step 9.6: PhishTank URL intelligence ─────────────────────
+    phishtank_result = check_urls_phishtank(ioc_bundle.urls)
+
+    # ── Step 9.7: urlscan.io Dynamic URL Sandbox ────────────────
+    # Safely executes URLs in the remote isolated urlscan.io cloud sandbox.
+    # URLs are NEVER opened locally.
+    url_sandbox = analyze_urls_dynamic(ioc_bundle.urls)
 
     # ── Step 10: Threat scoring ───────────────────────────────────
     threat_score = compute_threat_score(
@@ -96,6 +125,9 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         url_analysis=url_analysis,
         att_analysis=att_analysis,
         header_intel=header_intel,
+        att_content_analysis=att_content_analysis,
+        url_sandbox=url_sandbox,
+        geo_records=geo_records,
     )
 
     # ── Step 10.5: Forensic domain intelligence ───────────────────
@@ -107,12 +139,56 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
     # ── Step 10.6: OSINT intelligence ──────────────────────────────
     # Passive public intelligence lookup on deduplicated indicators
     # (domains, IPs, URLs).
-    ioc_bundle = extract_iocs(parsed, url_analysis=url_analysis, ip_intel=ip_intel)
     osint_result = run_osint_analysis(ioc_bundle)
 
-    # ── Step 10.7: PhishTank URL intelligence ─────────────────────
-    # Check extracted URLs against the PhishTank known-phishing database.
-    phishtank_result = check_urls_phishtank(ioc_bundle.urls)
+    # ── Safe Pipeline Diagnostics ─────────────────────────────────
+    try:
+        url_found_count = len(parsed.urls) + len(att_extracted_urls)
+        url_unique_count = len(url_analysis.all_urls)
+        sb_mode = getattr(url_sandbox, "mode", "LIVE")
+        sb_submitted = getattr(url_sandbox, "total_scanned", 0)
+        sb_completed = sum(1 for f in getattr(url_sandbox, "findings", []) if f.status == "COMPLETED")
+        sb_failed = sum(1 for f in getattr(url_sandbox, "findings", []) if f.status in ("ERROR", "TIMEOUT", "FAILED"))
+        ip_public_count = len(ip_intel.public_ips)
+        ip_lookups = len(geo_records)
+        ip_success = sum(1 for g in geo_records if getattr(g, "status", "") == "success")
+        ip_not_found = sum(1 for g in geo_records if getattr(g, "status", "") == "not_found")
+        ip_errors = sum(1 for g in geo_records if getattr(g, "status", "") in ("error", "unavailable"))
+        url_ev_count = len([e for e in threat_score.evidence if "URL" in e.signal])
+        ip_ev_count = len([e for e in threat_score.evidence if "IP" in e.signal or "Infrastructure" in e.signal])
+        att_ev_count = len([e for e in threat_score.evidence if "Attachment" in e.signal])
+
+        logger.info(
+            "--- GmailGuard Safe Diagnostics ---\n"
+            "URL extraction:\n"
+            "  %d URLs found\n"
+            "  %d unique URLs\n"
+            "URL sandbox:\n"
+            "  MODE: %s\n"
+            "  %d URLs submitted\n"
+            "  %d completed\n"
+            "  %d failed\n"
+            "IP intelligence:\n"
+            "  %d public IPs detected\n"
+            "  %d IPinfo lookups attempted\n"
+            "  %d successful\n"
+            "  %d not found\n"
+            "  %d errors\n"
+            "Correlation:\n"
+            "  %d URL evidence count\n"
+            "  %d IP evidence count\n"
+            "  %d attachment evidence count\n"
+            "  ML result: %s\n"
+            "  Final score: %d\n"
+            "  Final verdict: %s",
+            url_found_count, url_unique_count,
+            sb_mode, sb_submitted, sb_completed, sb_failed,
+            ip_public_count, ip_lookups, ip_success, ip_not_found, ip_errors,
+            url_ev_count, ip_ev_count, att_ev_count, ml_result.prediction,
+            threat_score.threat_score, threat_score.verdict,
+        )
+    except Exception:
+        pass
 
     # ── Step 10.8: Evidence correlation ───────────────────────────
     correlated_evidence = correlate_evidence(
@@ -128,6 +204,8 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         geo_records=geo_records,
         header_intel=header_intel,
         parsed=parsed,
+        att_content_analysis=att_content_analysis,
+        url_sandbox=url_sandbox,
     )
 
     # ── Step 11: Generate report ──────────────────────────────────
@@ -146,6 +224,8 @@ def analyze_email(raw_email: str) -> dict[str, Any]:
         osint_result=osint_result,
         correlated_evidence=correlated_evidence,
         phishtank_result=phishtank_result,
+        att_content_analysis=att_content_analysis,
+        url_sandbox=url_sandbox,
     )
 
     return report
@@ -239,6 +319,15 @@ def _print_summary(report: dict) -> None:
         print("\n  ℹ  Limitations:")
         for lim in report["limitations"][:5]:
             print(f"     • {lim[:100]}")
+
+    url_sandbox_info = forensics.get("url_sandbox")
+    if url_sandbox_info and url_sandbox_info.get("total_scanned", 0) > 0:
+        print(f"\n  🛡️  urlscan.io Cloud Sandbox : {url_sandbox_info['total_scanned']} URL(s) dynamically evaluated")
+        print(f"      Malicious: {url_sandbox_info.get('malicious_count', 0)} | Suspicious: {url_sandbox_info.get('suspicious_count', 0)}")
+        for f in url_sandbox_info.get("findings", [])[:3]:
+            print(f"      - [{f.get('verdict')}] {f.get('submitted_url')} (score: {f.get('malicious_score')}/100)")
+            if f.get("screenshot_url"):
+                print(f"        Screenshot: {f.get('screenshot_url')}")
 
     print("=" * 60 + "\n")
 

@@ -1178,8 +1178,11 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
 
             <!-- Observable Geolocation Cards -->
             <div class="card">
-              <div class="card-header">
+              <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
                 <div class="card-title">🌍 Observable Mail Infrastructure Geolocation (${r.geolocation?.length || 0})</div>
+                <div style="font-size:11px;color:var(--text-muted)">
+                  Observable Sender IP: <strong class="font-mono" style="color:${r.senderIp && r.senderIp !== 'NOT_OBSERVABLE' ? 'var(--cyan)' : 'var(--text-muted)'}">${r.senderIp || 'NOT_OBSERVABLE'}</strong>
+                </div>
               </div>
               <div class="card-body">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:14px">
@@ -1191,9 +1194,14 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
                       <div class="geo-item">
                         <div class="geo-flag">${g.flag || '🌐'}</div>
                         <div style="flex:1">
-                          <div class="geo-ip font-mono">${g.ip}</div>
+                          <div style="display:flex;align-items:center;gap:8px">
+                            <div class="geo-ip font-mono">${g.ip}</div>
+                            <span class="badge ${g.status === 'SUCCESS' ? 'badge-low' : 'badge-medium'}" style="font-size:9px">IPinfo: ${g.status || 'SUCCESS'}</span>
+                            <span class="badge badge-outline" style="font-size:9px;color:var(--text-muted)">${g.source || 'IPinfo'}</span>
+                          </div>
                           <div class="geo-location">${g.city || 'Unknown'}, ${g.region ? g.region + ', ' : ''}${g.country || 'Unknown'}</div>
                           <div class="geo-org font-mono" style="font-size:11px">${g.asn || ''} • ${g.org || 'Unknown'} &nbsp;|&nbsp; TZ: ${g.timezone}</div>
+                          ${g.reason ? `<div style="font-size:10px;color:var(--amber);margin-top:2px">⚠️ Note: ${g.reason}</div>` : ''}
                           <div style="font-size:10px;color:var(--text-muted);margin-top:3px">ℹ️ ${g.forensicNote}</div>
                         </div>
                         <div class="geo-right">
@@ -1202,7 +1210,7 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
                       </div>
                     `).join('')}
                   </div>
-                ` : '<div style="color:var(--text-muted)">No routable public IPs observed in headers.</div>'}
+                ` : '<div style="color:var(--text-muted)">No routable public IPs observed in headers. Sender IP: <code>NOT_OBSERVABLE</code></div>'}
               </div>
             </div>
           </div>
@@ -1211,22 +1219,71 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
           <div class="tab-panel" id="inv-tab-urls">
             <!-- URL Intelligence -->
             <div class="card mb-16">
-              <div class="card-header">
+              <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
                 <div class="card-title">🔗 Extracted URLs & Threat Intelligence (${r.urls?.length || 0})</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <span class="badge badge-outline" style="border-color:var(--cyan);color:var(--cyan);font-size:10px">🛡️ urlscan.io Cloud Sandbox</span>
+                  <span class="badge badge-outline" style="border-color:var(--border-color);color:var(--text-muted);font-size:10px">Zero Local Execution</span>
+                </div>
               </div>
               <div class="card-body">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
                   ℹ️ Security Policy: URLs are handled as immutable forensic data, not clickable hyperlinks.
                 </div>
                 ${(r.urls && r.urls.length > 0) ? `
-                  <div style="display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;flex-direction:column;gap:12px">
                     ${r.urls.map(u => `
-                      <div class="url-item">
-                        <span>${u.isPhishTankVerified || u.isIpUrl ? '🔴' : '🟠'}</span>
-                        <span class="url-text font-mono">${u.url}</span>
-                        ${u.isPhishTankVerified ? `<span class="badge badge-phishtank">🚨 PhishTank #${u.phishTankId || 'MATCH'} (Target: ${u.phishTankTarget || 'Brand'})</span>` : ''}
-                        ${u.isIpUrl ? '<span class="badge badge-critical">IP-Based URL</span>' : ''}
-                        <span class="badge badge-${u.riskScore >= 50 ? 'critical' : u.riskScore >= 25 ? 'high' : 'low'}">Risk: ${u.riskScore}</span>
+                      <div class="url-item" style="display:flex;flex-direction:column;gap:8px;padding:12px;background:#060d1b;border:1px solid rgba(255,255,255,0.06);border-radius:6px">
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                          <span>${(u.sandbox && u.sandbox.is_malicious) || u.isPhishTankVerified || u.isIpUrl ? '🔴' : (u.sandbox && u.sandbox.verdict === 'SUSPICIOUS') ? '🟠' : '🟡'}</span>
+                          <span class="url-text font-mono" style="font-weight:600">${u.url}</span>
+                          ${u.sandbox ? `
+                            <span class="badge" style="background:#132035;color:var(--text-muted);font-size:9px">MODE: ${u.sandbox.mode || 'LIVE'}</span>
+                            ${u.sandbox.status === 'ERROR' || u.sandbox.status === 'TIMEOUT' ? `
+                              <span class="badge badge-high" style="font-size:10px">⚠️ urlscan.io: ${u.sandbox.status} (${u.sandbox.error || 'Failed'})</span>
+                            ` : u.sandbox.content_category === 'ADULT_CONTENT' || (u.sandbox.behavior_indicators && u.sandbox.behavior_indicators.includes('ADULT_CONTENT_DETECTED')) ? `
+                              <span class="badge badge-high" style="font-size:10px">⚠️ Adult Content Detected</span>
+                            ` : `
+                              <span class="badge badge-${u.sandbox.verdict === 'MALICIOUS' ? 'critical' : u.sandbox.verdict === 'SUSPICIOUS' ? 'high' : u.sandbox.verdict === 'CLEAN' ? 'low' : 'medium'}" style="font-size:10px">
+                                🛡️ urlscan.io: ${u.sandbox.verdict} (${u.sandbox.malicious_score}/100)
+                              </span>
+                            `}
+                          ` : ''}
+                          ${u.isPhishTankVerified ? `<span class="badge badge-phishtank">🚨 PhishTank #${u.phishTankId || 'MATCH'} (Target: ${u.phishTankTarget || 'Brand'})</span>` : ''}
+                          ${u.isIpUrl ? '<span class="badge badge-critical">IP-Based URL</span>' : ''}
+                          <span class="badge badge-${u.riskScore >= 50 ? 'critical' : u.riskScore >= 25 ? 'high' : 'low'}">Risk: ${u.riskScore}</span>
+                        </div>
+
+                        ${u.sandbox ? `
+                          <div style="font-size:11px;color:var(--text-secondary);background:rgba(0,0,0,0.25);padding:8px 10px;border-radius:4px;display:flex;flex-direction:column;gap:4px">
+                            ${u.sandbox.effective_url && u.sandbox.effective_url.replace(/\\/$/, '').toLowerCase() !== u.url.replace(/\\/$/, '').toLowerCase() ? `
+                              <div style="color:var(--amber)"><strong style="color:var(--amber)">↪ Dynamic Redirect:</strong> unmasked to <span class="font-mono">${u.sandbox.effective_url}</span></div>
+                            ` : ''}
+                            <div style="display:flex;gap:14px;flex-wrap:wrap;color:var(--text-muted)">
+                              <div><strong>Server:</strong> ${u.sandbox.page_info?.server || 'N/A'} (HTTP ${u.sandbox.page_info?.status_code || '200'})</div>
+                              <div><strong>Resolved IP:</strong> ${u.sandbox.page_info?.ip || 'N/A'}</div>
+                              <div><strong>Contacted Domains:</strong> ${(u.sandbox.contacted_domains || []).slice(0, 3).join(', ') || 'N/A'}</div>
+                            </div>
+                            ${u.sandbox.downloads && u.sandbox.downloads.length > 0 ? `
+                              <div style="color:var(--red);font-weight:600">
+                                ⚠️ Intercepted Payload Download: ${u.sandbox.downloads.map(d => `${d.filename} (${d.mime_type})`).join(', ')}
+                              </div>
+                            ` : ''}
+                            ${u.sandbox.behavior_indicators && u.sandbox.behavior_indicators.length > 0 ? `
+                              <div style="color:var(--text-secondary);font-size:10px">
+                                <strong>Behavior Indicators:</strong> ${u.sandbox.behavior_indicators.join(' • ')}
+                              </div>
+                            ` : ''}
+                            ${u.sandbox.screenshot_url ? `
+                              <div style="margin-top:2px">
+                                <a href="${u.sandbox.screenshot_url}" target="_blank" rel="noopener noreferrer" style="color:var(--cyan);text-decoration:none;font-size:11px">
+                                  📸 View Sandbox Screenshot ↗
+                                </a>
+                                ${u.sandbox.result_url ? ` &bull; <a href="${u.sandbox.result_url}" target="_blank" rel="noopener noreferrer" style="color:var(--text-muted);text-decoration:none">Full urlscan.io Report ↗</a>` : ''}
+                              </div>
+                            ` : ''}
+                          </div>
+                        ` : ''}
                       </div>
                     `).join('')}
                   </div>
@@ -1253,42 +1310,234 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
           <!-- TAB 5: ATTACHMENTS -->
           <div class="tab-panel" id="inv-tab-attachments">
             <div class="card">
-              <div class="card-header">
-                <div class="card-title">📎 Attachment Forensics (${r.attachments?.length || 0})</div>
+              <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+                <div class="card-title">📎 Deep Attachment & Content Forensics (${r.attachments?.length || 0})</div>
+                <div style="font-size:11px;color:var(--text-muted)">SIH26106 Deep Document Inspection Engine</div>
               </div>
               <div class="card-body">
-                <div style="background:#080e1c;border-left:3px solid var(--cyan);padding:10px 14px;border-radius:4px;font-size:12px;color:var(--text-secondary);margin-bottom:16px">
-                  ℹ️ <strong>Static Analysis Notice:</strong> Files are analyzed statically. Suspicious files are NOT executed.
+                <div style="background:#080e1c;border-left:3px solid var(--cyan);padding:10px 14px;border-radius:4px;font-size:12px;color:var(--text-secondary);margin-bottom:20px;display:flex;justify-content:space-between;align-items:center">
+                  <div>
+                    ℹ️ <strong>Safety Guarantee:</strong> Attachments are safely inspected using structural object parsing. Documents are <strong>NEVER executed</strong> on host.
+                  </div>
+                  <span class="badge badge-outline" style="border-color:var(--cyan);color:var(--cyan);font-size:10px">ZERO EXECUTION ENVIRONMENT</span>
                 </div>
+
                 ${(r.attachments && r.attachments.length > 0) ? `
-                  <div style="display:flex;flex-direction:column;gap:12px">
-                    ${r.attachments.map(a => `
-                      <div class="attachment-item">
-                        <div class="attach-header">
-                          <div class="attach-icon">${a.extension === 'pdf' ? '📕' : ['docm','doc','xls','xlsm'].includes(a.extension) ? '📘' : '📄'}</div>
-                          <div>
-                            <div class="attach-name font-mono">${a.filename}</div>
-                            <div class="attach-meta">${a.contentType} • ${a.sizeMb} MB</div>
+                  <div style="display:flex;flex-direction:column;gap:24px">
+                    ${r.attachments.map((a, idx) => {
+                      const ca = a.contentAnalysis;
+                      const isPdf = a.extension === '.pdf' || a.fileType === 'PDF';
+                      const isLocked = ca?.encrypted || false;
+                      const statusColor = ca?.status === 'ANALYZED' ? 'var(--low)' : ca?.status === 'LIMITED' ? 'var(--medium)' : 'var(--text-muted)';
+                      const verdictColor = (a.riskScore >= 60 || ca?.contentVerdict === 'HIGH_RISK') ? 'var(--critical)' : (a.riskScore >= 30 || ca?.contentVerdict === 'SUSPICIOUS') ? 'var(--high)' : isLocked ? 'var(--medium)' : 'var(--low)';
+                      const verdictBadge = isLocked ? 'NOT ANALYZABLE (LOCKED)' : (a.riskScore >= 60 ? 'HIGH RISK' : a.riskScore >= 30 ? 'SUSPICIOUS' : 'CLEAN / EVALUATED');
+
+                      return `
+                        <div class="attachment-deep-card" style="background:#0a1020;border:1px solid var(--border);border-radius:10px;padding:18px;display:flex;flex-direction:column;gap:16px">
+                          
+                          <!-- 1. ATTACHMENT OVERVIEW -->
+                          <div style="display:flex;align-items:flex-start;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid var(--border)">
+                            <div style="display:flex;align-items:center;gap:12px">
+                              <div style="font-size:28px">${isPdf ? '📕' : ['docm','doc','xls','xlsm'].includes(a.extension) ? '📘' : a.isArchive ? '📦' : '📄'}</div>
+                              <div>
+                                <div class="font-mono" style="font-size:15px;font-weight:700;color:var(--text-primary)">${a.filename}</div>
+                                <div style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:8px;margin-top:2px">
+                                  <span>${a.contentType}</span>
+                                  <span>•</span>
+                                  <span>${a.sizeMb} MB (${a.sizeBytes.toLocaleString()} bytes)</span>
+                                  <span>•</span>
+                                  <span style="color:var(--cyan);font-weight:600">${a.fileType}</span>
+                                </div>
+                              </div>
+                            </div>
+                            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+                              <div style="display:flex;gap:6px">
+                                ${isLocked ? `
+                                  <span class="badge" style="background:var(--medium-dim);color:var(--medium);border:1px solid var(--medium)">
+                                    🔒 PASSWORD PROTECTED
+                                  </span>
+                                ` : `
+                                  <span class="badge" style="background:var(--low-dim);color:var(--low);border:1px solid var(--low)">
+                                    🔓 UNENCRYPTED
+                                  </span>
+                                `}
+                                <span class="badge" style="background:${verdictColor}20;color:${verdictColor};border:1px solid ${verdictColor}">
+                                  ${verdictBadge}
+                                </span>
+                              </div>
+                              ${a.isMacroEnabled ? '<span class="badge badge-critical">⚠ MACRO ENABLED FILE</span>' : ''}
+                            </div>
                           </div>
-                          <div style="margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:6px">
-                            <span class="badge badge-${a.riskScore >= 60 ? 'critical' : a.riskScore >= 30 ? 'high' : 'low'}">
-                              ${a.riskScore >= 60 ? 'DANGEROUS' : a.riskScore >= 30 ? 'SUSPICIOUS' : 'EVALUATED'}
-                            </span>
-                            ${a.isMacroEnabled ? '<span class="badge badge-critical">⚠ MACRO ENABLED</span>' : ''}
+
+                          <!-- 2. CONTENT ANALYSIS INSPECTION -->
+                          ${ca ? `
+                            <div style="background:#060a14;border:1px solid #142238;border-radius:8px;padding:14px">
+                              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                                <div style="font-size:13px;font-weight:700;color:var(--cyan);display:flex;align-items:center;gap:6px">
+                                  <span>🔍 Deep Document Content Inspection</span>
+                                </div>
+                                <span class="badge" style="background:${statusColor}18;color:${statusColor};border:1px solid ${statusColor}40;font-size:11px">
+                                  STATUS: ${ca.status}
+                                </span>
+                              </div>
+
+                              ${isLocked ? `
+                                <div style="background:#161204;border:1px solid #3d3106;border-radius:6px;padding:10px 14px;font-size:12px;color:var(--medium);margin-bottom:8px">
+                                  ⚠️ <strong>Content Analysis Limited:</strong> ${ca.reason || 'PDF is password protected/encrypted. In accordance with security constraints, password bypass was not attempted.'}
+                                  <div style="margin-top:4px;color:var(--text-muted);font-size:11px">File cannot be claimed safe merely because it is encrypted. Content verdict is set to <strong>NOT ANALYZABLE</strong>.</div>
+                                </div>
+                              ` : `
+                                <!-- Inspection Matrix -->
+                                <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:10px;margin-bottom:12px">
+                                  <div style="background:#0c1527;padding:8px 12px;border-radius:6px">
+                                    <div style="font-size:11px;color:var(--text-muted)">Page Count</div>
+                                    <div class="font-mono" style="font-size:14px;font-weight:700;color:var(--text-primary)">${ca.pages} page(s)</div>
+                                  </div>
+                                  <div style="background:#0c1527;padding:8px 12px;border-radius:6px">
+                                    <div style="font-size:11px;color:var(--text-muted)">Text Extraction</div>
+                                    <div class="font-mono" style="font-size:14px;font-weight:700;color:${ca.textExtracted ? 'var(--low)' : 'var(--text-muted)'}">
+                                      ${ca.textExtracted ? `✓ ${ca.textLength} chars` : 'None / Scanned'}
+                                    </div>
+                                  </div>
+                                  <div style="background:#0c1527;padding:8px 12px;border-radius:6px">
+                                    <div style="font-size:11px;color:var(--text-muted)">JavaScript Token</div>
+                                    <div class="font-mono" style="font-size:14px;font-weight:700;color:${ca.javascriptDetected ? 'var(--critical)' : 'var(--low)'}">
+                                      ${ca.javascriptDetected ? '⚠ DETECTED' : '✓ None'}
+                                    </div>
+                                  </div>
+                                  <div style="background:#0c1527;padding:8px 12px;border-radius:6px">
+                                    <div style="font-size:11px;color:var(--text-muted)">Document Actions</div>
+                                    <div class="font-mono" style="font-size:14px;font-weight:700;color:${ca.actionsDetected.length > 0 ? 'var(--high)' : 'var(--text-muted)'}">
+                                      ${ca.actionsDetected.length > 0 ? ca.actionsDetected.join(', ') : 'None'}
+                                    </div>
+                                  </div>
+                                  <div style="background:#0c1527;padding:8px 12px;border-radius:6px">
+                                    <div style="font-size:11px;color:var(--text-muted)">Embedded Payloads</div>
+                                    <div class="font-mono" style="font-size:14px;font-weight:700;color:${ca.embeddedFiles.length > 0 ? 'var(--critical)' : 'var(--low)'}">
+                                      ${ca.embeddedFiles.length > 0 ? `${ca.embeddedFiles.length} file(s)` : 'None'}
+                                    </div>
+                                  </div>
+                                  <div style="background:#0c1527;padding:8px 12px;border-radius:6px">
+                                    <div style="font-size:11px;color:var(--text-muted)">Interactive Forms</div>
+                                    <div class="font-mono" style="font-size:14px;font-weight:700;color:${ca.formsDetected ? 'var(--medium)' : 'var(--text-muted)'}">
+                                      ${ca.formsDetected ? 'AcroForm Present' : 'None'}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <!-- Text Preview if available -->
+                                ${ca.textPreview ? `
+                                  <div style="margin-top:10px;background:#050912;border:1px solid #141e30;border-radius:6px;padding:10px">
+                                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">EXTRACTED CONTENT PREVIEW:</div>
+                                    <div class="font-mono" style="font-size:12px;color:var(--text-secondary);max-height:80px;overflow-y:auto;white-space:pre-wrap">${ca.textPreview}</div>
+                                  </div>
+                                ` : ''}
+
+                                <!-- Document Metadata if available -->
+                                ${Object.keys(ca.metadata || {}).length > 0 ? `
+                                  <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px">
+                                    ${Object.entries(ca.metadata).map(([k, v]) => `
+                                      <span style="background:#0c1527;border:1px solid #1e2d45;border-radius:4px;padding:3px 8px;font-size:11px;color:var(--text-secondary)">
+                                        <strong style="color:var(--cyan)">${k}:</strong> ${v}
+                                      </span>
+                                    `).join('')}
+                                  </div>
+                                ` : ''}
+                              `}
+                            </div>
+                          ` : ''}
+
+                          <!-- 3. EXTRACTED IOCS & EMBEDDED URLS -->
+                          ${ca && ca.urls && ca.urls.length > 0 ? `
+                            <div style="background:#060a14;border:1px solid #142238;border-radius:8px;padding:14px">
+                              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                                <div style="font-size:13px;font-weight:700;color:var(--cyan)">🔗 Discovered Links & IOCs (${ca.urls.length})</div>
+                                <span style="font-size:11px;color:var(--text-muted)">Piped to Threat Intelligence Pipeline</span>
+                              </div>
+                              <div style="display:flex;flex-direction:column;gap:8px">
+                                ${ca.urls.map(u => {
+                                  const matchedTI = (ca.urlIntelligence || []).find(item => item.url === u);
+                                  const rep = matchedTI?.reputation || 'unknown';
+                                  const repColor = rep === 'malicious' ? 'var(--critical)' : rep === 'suspicious' ? 'var(--high)' : 'var(--low)';
+                                  return `
+                                    <div style="background:#0c1527;border:1px solid #1b2840;border-radius:6px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center">
+                                      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:12px">
+                                        <div class="font-mono" style="font-size:12px;color:var(--cyan)">${u}</div>
+                                        ${matchedTI?.reasons?.length ? `
+                                          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${matchedTI.reasons.join('; ')}</div>
+                                        ` : ''}
+                                      </div>
+                                      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+                                        <span class="badge" style="background:${repColor}18;color:${repColor};border:1px solid ${repColor}40;font-size:10px">
+                                          ${rep.toUpperCase()}
+                                        </span>
+                                        ${matchedTI?.riskScore != null ? `
+                                          <span class="font-mono" style="font-size:12px;font-weight:700;color:${repColor}">${matchedTI.riskScore}/100</span>
+                                        ` : ''}
+                                      </div>
+                                    </div>
+                                  `;
+                                }).join('')}
+                              </div>
+                            </div>
+                          ` : ''}
+
+                          <!-- 4. ATTACHMENT VERDICT & RISK FACTORS -->
+                          <div style="background:#060a14;border:1px solid #142238;border-radius:8px;padding:14px">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                              <div style="font-size:13px;font-weight:700;color:var(--text-primary)">⚖️ Attachment Threat Verdict</div>
+                              <div class="font-mono" style="font-size:16px;font-weight:800;color:${verdictColor}">
+                                Risk Score: ${a.riskScore}/100
+                              </div>
+                            </div>
+                            <div style="margin-bottom:10px">
+                              <div style="height:6px;background:#142238;border-radius:3px;overflow:hidden">
+                                <div style="height:100%;width:${a.riskScore}%;background:${verdictColor};border-radius:3px"></div>
+                              </div>
+                            </div>
+                            <div style="display:flex;flex-direction:column;gap:4px">
+                              ${(a.reasons || []).map(rText => `
+                                <div style="font-size:12px;color:var(--text-secondary);display:flex;align-items:flex-start;gap:6px">
+                                  <span style="color:${verdictColor}">•</span>
+                                  <span>${rText}</span>
+                                </div>
+                              `).join('')}
+                            </div>
                           </div>
+
+                          <!-- 5. FORENSIC TIMELINE -->
+                          ${ca && ca.timeline && ca.timeline.length > 0 ? `
+                            <div style="padding-top:10px;border-top:1px solid #142238">
+                              <div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">
+                                ⏱️ Forensic Inspection Timeline
+                              </div>
+                              <div style="display:flex;flex-direction:column;gap:6px">
+                                ${ca.timeline.map((step, sIdx) => {
+                                  const stepIcon = step.status === 'completed' ? '✓' : step.status === 'limited' ? '⚠' : '✗';
+                                  const stepColor = step.status === 'completed' ? 'var(--cyan)' : step.status === 'limited' ? 'var(--medium)' : 'var(--critical)';
+                                  return `
+                                    <div style="display:flex;align-items:center;gap:10px;font-size:11px">
+                                      <span class="font-mono" style="width:20px;height:20px;border-radius:50%;background:${stepColor}20;color:${stepColor};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:10px;flex-shrink:0">
+                                        ${stepIcon}
+                                      </span>
+                                      <span class="font-mono" style="color:var(--text-muted);width:55px;flex-shrink:0">+${step.timestamp_offset_ms || (sIdx * 4)}ms</span>
+                                      <span style="color:var(--text-secondary)">${step.description}</span>
+                                    </div>
+                                  `;
+                                }).join('')}
+                              </div>
+                            </div>
+                          ` : ''}
+
                         </div>
-                        <div class="attach-hashes">
-                          <div class="hash-row"><div class="hash-label">Extension Findings</div><div class="hash-value">${a.isDangerousExtension ? 'Dangerous File Extension Flagged' : 'Standard Extension'}</div></div>
-                          <div class="hash-row"><div class="hash-label">Risk Factors</div><div class="hash-value">${(a.reasons || []).join('; ') || 'No anomalies detected'}</div></div>
-                        </div>
-                      </div>
-                    `).join('')}
+                      `;
+                    }).join('')}
                   </div>
                 ` : `
                   <div class="empty-state">
                     <div class="empty-icon">📎</div>
                     <div class="empty-title">No Attachments Detected</div>
-                    <div class="empty-text">This email has no file attachments.</div>
+                    <div class="empty-text">This email contains no MIME attachments.</div>
                   </div>
                 `}
               </div>

@@ -47,6 +47,11 @@ class AnalyzeTextRequest(BaseModel):
     def get_text(self) -> str:
         return self.raw_email or self.email_text or ""
 
+
+class URLSandboxRequest(BaseModel):
+    url: str
+    force_live: bool = False
+
 # ── FastAPI Application ───────────────────────────────────────────
 app = FastAPI(
     title="GmailGuard",
@@ -213,6 +218,27 @@ async def analyze_text_endpoint(payload: AnalyzeTextRequest) -> dict[str, Any]:
         )
 
     return report
+
+
+@app.post(
+    "/sandbox/scan-url",
+    response_model=dict[str, Any],
+    summary="Dynamic URL Analysis (urlscan.io Sandbox)",
+    description="Submit a URL for remote dynamic execution in urlscan.io. Never visited or executed locally.",
+    response_description="urlscan.io dynamic sandbox findings and indicators",
+)
+async def sandbox_scan_url_endpoint(payload: URLSandboxRequest) -> dict[str, Any]:
+    """Dynamically scan a URL via remote urlscan.io sandbox."""
+    url = (payload.url or "").strip()
+    if not url:
+        raise _safe_error("URL cannot be empty.")
+    try:
+        from .url_sandbox import scan_url_dynamic
+        finding = scan_url_dynamic(url, force_live=payload.force_live)
+        return finding.to_dict()
+    except Exception as exc:
+        logger.error("URL sandbox error: %s", type(exc).__name__, exc_info=True)
+        raise _safe_error("Failed to execute URL dynamic sandbox.", status_code=500)
 
 
 # ── Static Frontend Mount ─────────────────────────────────────────

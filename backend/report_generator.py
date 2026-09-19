@@ -43,6 +43,8 @@ def generate_report(
     osint_result: Optional[OSINTAnalysisResult] = None,
     correlated_evidence: Optional[list[dict[str, Any]]] = None,
     phishtank_result: Optional[Any] = None,
+    att_content_analysis: Optional[Any] = None,
+    url_sandbox: Optional[Any] = None,
 ) -> dict[str, Any]:
     """
     Generate the final structured forensic report.
@@ -95,6 +97,7 @@ def generate_report(
             "network":       getattr(g, "network", None),
             "source":        g.source,
             "status":        getattr(g, "status", "success"),
+            "reason":        getattr(g, "reason", None),
             "location_type": getattr(g, "location_type", "observable_infrastructure"),
             "location_note": getattr(g, "location_note", g.forensic_note),
             "forensic_note": g.forensic_note,
@@ -154,8 +157,13 @@ def generate_report(
             from .evidence_correlator import correlate_timezone
             timezone_analysis = correlate_timezone(parsed.date, target_geo.timezone)
 
+    # Observable sender/device IP: NEVER fabricate an IP
+    sender_ip = header_intel.x_originating_ip or "NOT_OBSERVABLE"
+
     infrastructure = {
         "forensic_scope":        getattr(config, "FORENSIC_SCOPE_DISCLAIMER", "Physical attribution is outside the scope of email-header analysis and may require additional evidence and lawful investigative processes."),
+        "sender_ip":             sender_ip,
+        "location_context":      "IP geolocation / network context",
         "upstream_relay_ip":     getattr(header_intel, "upstream_relay_ip", None),
         "candidate_relays":      getattr(header_intel, "candidate_relays", []),
         "timeline_analysis":     getattr(header_intel, "timeline_analysis", {}),
@@ -203,31 +211,63 @@ def generate_report(
     }
 
     # ── Attachments ──────────────────────────────────────────────
-    att_findings_list = [
-        {
+    content_by_name = {}
+    if att_content_analysis:
+        for cf in getattr(att_content_analysis, "findings", []):
+            content_by_name[cf.filename] = cf
+
+    att_findings_list = []
+    for f in att_analysis.findings:
+        cf = content_by_name.get(f.filename)
+        cf_dict = cf.to_dict() if cf and hasattr(cf, "to_dict") else (cf if isinstance(cf, dict) else None)
+        content_score = getattr(cf, "content_risk_score", 0) if cf else 0
+        combined_score = min(100, max(f.risk_score, content_score))
+        
+        combined_reasons = list(f.reasons)
+        if cf and getattr(cf, "reasons", None):
+            for r_text in cf.reasons:
+                if r_text not in combined_reasons:
+                    combined_reasons.append(r_text)
+
+        att_findings_list.append({
             "filename":                    f.filename,
             "extension":                   f.extension,
+            "file_type":                   getattr(cf, "file_type", "PDF" if f.extension == ".pdf" else "UNKNOWN"),
             "content_type":                f.content_type,
             "size_bytes":                  f.size_bytes,
             "size_mb":                     f.size_mb,
-            "risk_score":                  f.risk_score,
+            "risk_score":                  combined_score,
+            "risk_level":                  (
+                "NOT_ANALYZABLE" if (cf and (getattr(cf, "is_encrypted", False) or getattr(cf, "content_verdict", "") == "NOT_ANALYZABLE"))
+                else (cf.content_verdict if (cf and getattr(cf, "content_verdict", None))
+                      else ("HIGH_RISK" if combined_score >= 60 else "SUSPICIOUS" if combined_score >= 30 else "NO_THREATS_DETECTED"))
+            ),
             "is_dangerous_extension":      f.is_dangerous_extension,
-            "is_archive":                  f.is_archive,
             "is_macro_enabled":            f.is_macro_enabled,
             "has_double_extension":        f.has_double_extension,
             "suspicious_filename_keywords": f.suspicious_filename_keywords,
             "magic_byte_matches":          f.magic_byte_matches,
             "size_exceeds_limit":          f.size_exceeds_limit,
             "mime_extension_mismatch":     f.mime_extension_mismatch,
-            "reasons":                     f.reasons,
-        }
-        for f in att_analysis.findings
-    ]
+            "reasons":                     combined_reasons,
+            "content_analysis":            cf_dict,
+        })
+
+    suspicious_count = max(
+        att_analysis.suspicious_count,
+        sum(1 for item in att_findings_list if item.get("risk_score", 0) >= 30 or item.get("risk_level") in ("SUSPICIOUS", "HIGH_RISK"))
+    )
 
     attachments_section = {
         "count":      att_analysis.total_count,
-        "suspicious": att_analysis.suspicious_count,
+        "suspicious": suspicious_count,
         "findings":   att_findings_list,
+        "content_analysis_summary": {
+            "total_analyzed": getattr(att_content_analysis, "analyzed_count", 0) if att_content_analysis else 0,
+            "limited_count": getattr(att_content_analysis, "limited_count", 0) if att_content_analysis else 0,
+            "failed_count": getattr(att_content_analysis, "failed_count", 0) if att_content_analysis else 0,
+            "extracted_urls_count": len(att_content_analysis.get_all_urls()) if att_content_analysis and hasattr(att_content_analysis, "get_all_urls") else 0,
+        },
     }
 
     # ── ML ───────────────────────────────────────────────────────
@@ -364,6 +404,13 @@ def generate_report(
 
     if phishtank_result:
         forensics_section["phishtank"] = phishtank_result.to_dict()
+
+    if url_sandbox:
+        sandbox_dict = url_sandbox.to_dict() if hasattr(url_sandbox, "to_dict") else url_sandbox
+        forensics_section["url_sandbox"] = sandbox_dict
+        urls_section["dynamic_sandbox"] = sandbox_dict
+        if getattr(url_sandbox, "limitations", None):
+            forensics_section["limitations"].extend(url_sandbox.limitations)
 
     forensic_anomalies = [
         item for item in (correlated_evidence or [])

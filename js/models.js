@@ -157,6 +157,9 @@ class ThreatReportNormalizer {
       return {
         ip: g.ip || 'Unknown',
         flag: getFlag(g.country),
+        status: (g.status || 'success').toUpperCase(),
+        reason: g.reason || null,
+        source: g.source || 'IPinfo',
         city: g.city || 'Not available',
         region: g.region || 'Not available',
         country: g.country || 'Not available',
@@ -190,13 +193,16 @@ class ThreatReportNormalizer {
       anomalies: clientData.anomalies || []
     } : null;
 
-    // ── 11. URLs & PhishTank Verification ─────────────────────
+    // ── 11. URLs & PhishTank & urlscan.io Sandbox Verification ─────────
     const urlsSection = r.urls || {};
     const phishTankData = r.forensics?.phishtank || null;
     const phishMatches = phishTankData?.matches || [];
+    const sandboxData = r.forensics?.url_sandbox || r.urls?.dynamic_sandbox || null;
+    const sandboxFindings = sandboxData?.findings || [];
 
     const urls = (urlsSection.findings || []).map(f => {
       const ptMatch = phishMatches.find(m => m.url === f.url);
+      const sbFinding = sandboxFindings.find(s => s.submitted_url === f.url || s.effective_url === f.url);
       return {
         url: f.url,
         domain: f.domain || 'Unknown',
@@ -213,7 +219,8 @@ class ThreatReportNormalizer {
         reasons: Array.isArray(f.reasons) ? f.reasons : [],
         isPhishTankVerified: Boolean(ptMatch),
         phishTankId: ptMatch?.phish_id || null,
-        phishTankTarget: ptMatch?.target || null
+        phishTankTarget: ptMatch?.target || null,
+        sandbox: sbFinding || null,
       };
     });
 
@@ -233,23 +240,55 @@ class ThreatReportNormalizer {
       reasons: domainData.reasons || []
     };
 
-    // ── 13. Attachment Static Analysis ────────────────────────
+    // ── 13. Attachment Static & Deep Content Analysis ──────────
     const attSection = r.attachments || {};
-    const attachments = (attSection.findings || []).map(a => ({
-      filename: a.filename || 'Unnamed attachment',
-      extension: a.extension || '',
-      contentType: a.content_type || 'application/octet-stream',
-      sizeBytes: a.size_bytes || 0,
-      sizeMb: a.size_mb != null ? a.size_mb : (a.size_bytes / (1024 * 1024)).toFixed(2),
-      riskScore: a.risk_score || 0,
-      isDangerousExtension: Boolean(a.is_dangerous_extension),
-      isMacroEnabled: Boolean(a.is_macro_enabled),
-      isArchive: Boolean(a.is_archive),
-      hasDoubleExtension: Boolean(a.has_double_extension),
-      suspiciousKeywords: a.suspicious_filename_keywords || [],
-      reasons: a.reasons || [],
-      staticNotice: 'Files are analyzed statically. Suspicious files are NOT executed.'
-    }));
+    const attachments = (attSection.findings || []).map(a => {
+      const ca = a.content_analysis || null;
+      return {
+        filename: a.filename || 'Unnamed attachment',
+        extension: a.extension || '',
+        fileType: a.file_type || (a.extension === '.pdf' ? 'PDF' : 'UNKNOWN'),
+        contentType: a.content_type || 'application/octet-stream',
+        sizeBytes: a.size_bytes || 0,
+        sizeMb: a.size_mb != null ? a.size_mb : (a.size_bytes / (1024 * 1024)).toFixed(2),
+        riskScore: a.risk_score || 0,
+        riskLevel: a.risk_level || (a.risk_score >= 60 ? 'HIGH_RISK' : a.risk_score >= 30 ? 'SUSPICIOUS' : 'SAFE'),
+        isDangerousExtension: Boolean(a.is_dangerous_extension),
+        isMacroEnabled: Boolean(a.is_macro_enabled),
+        isArchive: Boolean(a.is_archive),
+        hasDoubleExtension: Boolean(a.has_double_extension),
+        suspiciousKeywords: a.suspicious_filename_keywords || [],
+        reasons: a.reasons || [],
+        staticNotice: 'Files are analyzed safely. Suspicious files are NOT executed on host.',
+        
+        // Deep content analysis fields
+        contentAnalysis: ca ? {
+          status: ca.status || ca.content_analysis_status || 'ANALYZED',
+          analyzable: Boolean(ca.content_analyzable),
+          encrypted: Boolean(ca.encrypted),
+          reason: ca.reason || null,
+          pages: ca.pages || 0,
+          textExtracted: Boolean(ca.text_extracted),
+          textLength: ca.text_length || 0,
+          textPreview: ca.text_preview || '',
+          urls: Array.isArray(ca.urls) ? ca.urls : [],
+          domains: Array.isArray(ca.domains) ? ca.domains : [],
+          javascriptDetected: Boolean(ca.javascript_detected),
+          javascriptDetails: Array.isArray(ca.javascript_details) ? ca.javascript_details : [],
+          embeddedFiles: Array.isArray(ca.embedded_files) ? ca.embedded_files : [],
+          formsDetected: Boolean(ca.forms_detected),
+          actionsDetected: Array.isArray(ca.actions_detected) ? ca.actions_detected : [],
+          metadata: ca.metadata || {},
+          suspiciousIndicators: Array.isArray(ca.suspicious_indicators) ? ca.suspicious_indicators : [],
+          contentRiskScore: ca.content_risk_score != null ? ca.content_risk_score : 0,
+          contentVerdict: ca.content_verdict || 'UNKNOWN',
+          reasons: Array.isArray(ca.reasons) ? ca.reasons : [],
+          extractedIocs: ca.extracted_iocs || { urls: [], domains: [] },
+          urlIntelligence: Array.isArray(ca.url_intelligence) ? ca.url_intelligence : [],
+          timeline: Array.isArray(ca.timeline) ? ca.timeline : [],
+        } : null
+      };
+    });
 
     // ── 14. ML Content Analysis (No fake confidence %) ────────
     const mlData = r.ml || {};
@@ -334,6 +373,7 @@ class ThreatReportNormalizer {
       timezoneCorrelation,
       clientFingerprint,
       urls,
+      urlSandbox: sandboxData,
       domain,
       attachments,
       ml,

@@ -8,3 +8,6 @@ uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 httpx>=0.27.0
 python-dotenv>=1.0.0
+
+# Document and Attachment Inspection
+pypdf>=4.0.0

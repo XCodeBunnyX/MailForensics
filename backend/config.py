@@ -5,8 +5,12 @@ No business-logic code imports this as a module; it is imported directly.
 """
 
 import os
+from pathlib import Path
 try:
     from dotenv import load_dotenv
+    _backend_env = Path(__file__).resolve().parent / ".env"
+    if _backend_env.exists():
+        load_dotenv(_backend_env)
     load_dotenv()
 except ImportError:
     pass
@@ -220,6 +224,35 @@ PHISHTANK_API_KEY: str = _os.getenv("PHISHTANK_API_KEY", "")
 
 # Network timeout for PhishTank API requests.
 PHISHTANK_API_TIMEOUT_S: int = 8
+
+# ──────────────────────────────────────────────
+# ATTACHMENT CONTENT INSPECTION
+# ──────────────────────────────────────────────
+# Resource limits for safe document parsing
+MAX_CONTENT_INSPECTION_BYTES: int = 20 * 1024 * 1024  # 20 MB max document size to inspect
+MAX_PDF_PAGES_INSPECT: int        = 50               # max pages to parse per PDF
+MAX_EXTRACTED_TEXT_PREVIEW_CHARS: int = 1000         # characters to retain for preview
+
+SUSPICIOUS_PDF_CONTENT_KEYWORDS: list[str] = [
+    "password", "verify your account", "account suspended", "urgent action required",
+    "billing update", "wire transfer", "payment confirmation", "invoice due",
+    "security alert", "click here", "sign in", "login", "credentials",
+    "bank account", "tax refund", "unauthorized access", "immediate verification",
+]
+
+# ──────────────────────────────────────────────
+# URLSCAN.IO DYNAMIC SANDBOX ANALYSIS
+# ──────────────────────────────────────────────
+# API key loaded from environment (.env), never hardcoded
+URLSCAN_API_KEY: str = _os.getenv("URLSCAN_API_KEY", "")
+URLSCAN_ENABLED: bool = _os.getenv("URLSCAN_ENABLED", "true").lower() == "true"
+MOCK_URLSCAN: bool = _os.getenv("MOCK_URLSCAN", "false").lower() == "true"
+URLSCAN_SUBMIT_URL: str = "https://urlscan.io/api/v1/scan/"
+URLSCAN_RESULT_BASE_URL: str = "https://urlscan.io/api/v1/result/"
+URLSCAN_POLL_TIMEOUT_S: int = int(_os.getenv("URLSCAN_POLL_TIMEOUT_S", "45"))
+URLSCAN_POLL_INTERVAL_S: float = float(_os.getenv("URLSCAN_POLL_INTERVAL_S", "3.0"))
+URLSCAN_VISIBILITY: str = _os.getenv("URLSCAN_VISIBILITY", "unlisted")
+URLSCAN_MAX_URLS_PER_ANALYSIS: int = int(_os.getenv("URLSCAN_MAX_URLS_PER_ANALYSIS", "3"))
 
 del _os
 

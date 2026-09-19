@@ -126,9 +126,11 @@ def correlate_evidence(
     geo_records: Optional[list[Any]] = None,
     header_intel: Optional[Any] = None,
     parsed: Optional[Any] = None,
+    att_content_analysis: Optional[Any] = None,
+    url_sandbox: Optional[Any] = None,
 ) -> list[dict[str, Any]]:
     """
-    Correlate findings across ML, Authentication, URLs, Infrastructure, OSINT, and PhishTank.
+    Correlate findings across ML, Authentication, URLs, Infrastructure, OSINT, PhishTank, and urlscan.io Sandbox.
     Returns a list of dicts suitable for the final report.
     """
     evidence: list[CorrelatedEvidenceItem] = []
@@ -233,6 +235,21 @@ def correlate_evidence(
                         "organization": g_org,
                         "location_type": "observable_infrastructure",
                     },
+                ))
+            elif g_status in ("error", "unavailable"):
+                reason = getattr(g, "reason", "service unavailable")
+                evidence.append(CorrelatedEvidenceItem(
+                    source="IPinfo",
+                    finding=f"IPinfo observable infrastructure lookup for {g_ip} encountered limitation ({reason}).",
+                    severity="info",
+                    details={"ip": g_ip, "status": "ERROR", "reason": reason},
+                ))
+            elif g_status == "not_found":
+                evidence.append(CorrelatedEvidenceItem(
+                    source="IPinfo",
+                    finding=f"IPinfo observable infrastructure lookup for {g_ip}: no intelligence returned.",
+                    severity="info",
+                    details={"ip": g_ip, "status": "NOT_FOUND"},
                 ))
 
     # ── 4c. Timezone Discrepancy Heuristic ────────────────────────
@@ -351,7 +368,7 @@ def correlate_evidence(
             details={"age_days": domain_intel.age_days},
         ))
 
-    # ── 6. Attachment Signal ──────────────────────────────────────
+    # ── 6. Attachment Signal (Static & Deep Content) ──────────────
     if att_analysis.suspicious_count > 0:
         evidence.append(CorrelatedEvidenceItem(
             source="Attachment",
@@ -359,6 +376,70 @@ def correlate_evidence(
             severity="high",
             details={"suspicious_count": att_analysis.suspicious_count},
         ))
+
+    if att_content_analysis:
+        for cf in getattr(att_content_analysis, "findings", []):
+            if cf.encrypted:
+                evidence.append(CorrelatedEvidenceItem(
+                    source="Attachment/Content",
+                    finding=(
+                        f"Attachment '{cf.filename}' is password protected / encrypted. "
+                        "Content inspection is limited (password was not bypassed). "
+                        "Encrypted files cannot be verified as safe and may conceal malicious payloads."
+                    ),
+                    severity="medium",
+                    details={"filename": cf.filename, "status": "LIMITED", "reason": cf.reason},
+                    channel="forensic",
+                    evidence_class="OBSERVED",
+                ))
+            elif cf.content_analysis_status == "ANALYZED":
+                if cf.javascript_detected:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Attachment/Content",
+                        finding=(
+                            f"Attachment '{cf.filename}' contains embedded JavaScript "
+                            f"({', '.join(cf.javascript_details[:2]) or 'active script object'}), "
+                            "indicating potential client exploit delivery."
+                        ),
+                        severity="high",
+                        details={"filename": cf.filename, "details": cf.javascript_details},
+                    ))
+                if "/Launch" in cf.actions_detected:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Attachment/Content",
+                        finding=(
+                            f"Attachment '{cf.filename}' contains a /Launch action designed to execute external applications."
+                        ),
+                        severity="high",
+                        details={"filename": cf.filename, "actions": cf.actions_detected},
+                    ))
+                elif "/OpenAction" in cf.actions_detected:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Attachment/Content",
+                        finding=(
+                            f"Attachment '{cf.filename}' contains an automated /OpenAction trigger executing behavior immediately upon opening."
+                        ),
+                        severity="medium",
+                        details={"filename": cf.filename, "actions": cf.actions_detected},
+                    ))
+                if cf.embedded_files:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Attachment/Content",
+                        finding=(
+                            f"Attachment '{cf.filename}' contains {len(cf.embedded_files)} embedded file payload(s) ({', '.join(cf.embedded_files[:3])})."
+                        ),
+                        severity="high",
+                        details={"filename": cf.filename, "embedded_files": cf.embedded_files},
+                    ))
+                if cf.urls:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Attachment/Content",
+                        finding=(
+                            f"Attachment '{cf.filename}' contains {len(cf.urls)} embedded hyperlink(s) pointing to external domains: {', '.join(cf.domains[:3])}."
+                        ),
+                        severity="high" if cf.content_risk_score >= 60 else "medium",
+                        details={"filename": cf.filename, "urls_count": len(cf.urls), "domains": cf.domains[:5]},
+                    ))
 
     # ── 7. OSINT Intelligence Signal ──────────────────────────────
     has_osint_detection = False
@@ -453,6 +534,29 @@ def correlate_evidence(
             details={"vectors": ["URL", "IP"]},
         ))
 
+    # Case D: Encrypted Attachment + ML Phishing Prediction = Obfuscated Delivery Campaign
+    has_encrypted_att = any(getattr(cf, "encrypted", False) for cf in (getattr(att_content_analysis, "findings", []) or []))
+    if has_encrypted_att and is_ml_phish:
+        evidence.append(CorrelatedEvidenceItem(
+            source="Cross-Vector",
+            finding="CORRELATION DETECTED: Email text matches phishing profile while attachment is password protected / encrypted to evade static scanner inspection.",
+            severity="high",
+            details={"vectors": ["ML", "Attachment/Content"]},
+        ))
+
+    # Case E: Attachment Active Exploit Trigger + Authentication Failure = Targeted Exploit Delivery
+    has_exploit_att = any(
+        getattr(cf, "javascript_detected", False) or ("/Launch" in getattr(cf, "actions_detected", []))
+        for cf in (getattr(att_content_analysis, "findings", []) or [])
+    )
+    if has_exploit_att and auth_failed:
+        evidence.append(CorrelatedEvidenceItem(
+            source="Cross-Vector",
+            finding="CORRELATION DETECTED: Spoofed or unauthenticated sender delivers document attachment with active script/application execution triggers.",
+            severity="critical",
+            details={"vectors": ["Authentication", "Attachment/Content"]},
+        ))
+
     # ── 10. PhishTank URL Intelligence ────────────────────────────
     has_phishtank_hit = False
     if phishtank_result:
@@ -485,6 +589,126 @@ def correlate_evidence(
             finding="CORRELATION DETECTED: NLP phishing classification confirmed by PhishTank verified phishing URL database.",
             severity="high",
             details={"vectors": ["ML", "PhishTank"]},
+        ))
+
+    # ── 11. urlscan.io Dynamic URL Sandbox Intelligence ───────────
+    has_sandbox_malicious = False
+    has_sandbox_downloads = False
+    if url_sandbox:
+        findings_list = getattr(url_sandbox, "findings", []) or (url_sandbox.get("findings", []) if isinstance(url_sandbox, dict) else [])
+        for f in findings_list:
+            # Handle both dataclass and dict forms
+            f_verdict = getattr(f, "verdict", None) or (f.get("verdict") if isinstance(f, dict) else "")
+            f_is_malicious = getattr(f, "is_malicious", False) or (f.get("is_malicious", False) if isinstance(f, dict) else False)
+            f_submitted_url = getattr(f, "submitted_url", "") or (f.get("submitted_url", "") if isinstance(f, dict) else "")
+            f_effective_url = getattr(f, "effective_url", "") or (f.get("effective_url", "") if isinstance(f, dict) else "")
+            f_score = getattr(f, "malicious_score", 0) or (f.get("malicious_score", 0) if isinstance(f, dict) else 0)
+            f_categories = getattr(f, "categories", []) or (f.get("categories", []) if isinstance(f, dict) else [])
+            f_result_url = getattr(f, "result_url", "") or (f.get("result_url", "") if isinstance(f, dict) else "")
+            f_screenshot = getattr(f, "screenshot_url", "") or (f.get("screenshot_url", "") if isinstance(f, dict) else "")
+            f_redirects = getattr(f, "redirects", []) or (f.get("redirects", []) if isinstance(f, dict) else [])
+            f_downloads = getattr(f, "downloads", []) or (f.get("downloads", []) if isinstance(f, dict) else [])
+
+            if f_verdict == "MALICIOUS" or f_is_malicious:
+                has_sandbox_malicious = True
+                evidence.append(CorrelatedEvidenceItem(
+                    source="urlscan.io Sandbox",
+                    finding=(
+                        f"Dynamic execution of '{f_submitted_url}' in remote cloud sandbox "
+                        f"confirmed MALICIOUS activity (Score: {f_score}/100, "
+                        f"Categories: {f_categories or ['phishing']})."
+                    ),
+                    severity="critical" if f_score >= 80 else "high",
+                    details={
+                        "url": f_submitted_url,
+                        "effective_url": f_effective_url,
+                        "report_url": f_result_url,
+                        "screenshot_url": f_screenshot,
+                        "type": "dynamic_url_sandbox",
+                        "title": "Malicious URL Dynamic Execution",
+                    },
+                ))
+            elif f_verdict == "SUSPICIOUS":
+                evidence.append(CorrelatedEvidenceItem(
+                    source="urlscan.io Sandbox",
+                    finding=(
+                        f"Dynamic execution of '{f_submitted_url}' revealed suspicious sandbox behavior "
+                        f"(Score: {f_score}/100)."
+                    ),
+                    severity="medium",
+                    details={
+                        "url": f_submitted_url,
+                        "effective_url": f_effective_url,
+                        "report_url": f_result_url,
+                        "screenshot_url": f_screenshot,
+                        "type": "dynamic_url_sandbox",
+                        "title": "Suspicious URL Dynamic Execution",
+                    },
+                ))
+
+            if getattr(f, "content_category", None) == "ADULT_CONTENT" or "ADULT_CONTENT_DETECTED" in (getattr(f, "behavior_indicators", []) or []):
+                evidence.append(CorrelatedEvidenceItem(
+                    source="urlscan.io Sandbox",
+                    finding=f"Adult content detected on destination URL '{f_submitted_url}' (unwanted/suspicious content; not classified as malware).",
+                    severity="medium",
+                    details={"url": f_submitted_url, "category": "ADULT_CONTENT"},
+                ))
+
+            if getattr(f, "status", "") in ("ERROR", "TIMEOUT"):
+                evidence.append(CorrelatedEvidenceItem(
+                    source="urlscan.io Sandbox",
+                    finding=f"Dynamic URL sandbox for '{f_submitted_url}' encountered limitation: Status {getattr(f, 'status', 'ERROR')} ({getattr(f, 'error', 'analysis incomplete')}).",
+                    severity="info",
+                    details={"url": f_submitted_url, "status": getattr(f, "status", "ERROR")},
+                ))
+
+            # Dynamic redirect unmasking
+            if f_redirects or (f_effective_url and f_submitted_url and f_effective_url.rstrip("/").lower() != f_submitted_url.rstrip("/").lower()):
+                evidence.append(CorrelatedEvidenceItem(
+                    source="urlscan.io Sandbox",
+                    finding=f"Dynamic URL sandbox unmasked redirection: '{f_submitted_url}' redirected to '{f_effective_url}'.",
+                    severity="medium",
+                    details={
+                        "submitted_url": f_submitted_url,
+                        "effective_url": f_effective_url,
+                        "redirect_count": len(f_redirects),
+                    },
+                ))
+
+            # Download detection
+            if f_downloads:
+                has_sandbox_downloads = True
+                for dl in f_downloads:
+                    dl_name = dl.get("filename") if isinstance(dl, dict) else getattr(dl, "filename", "")
+                    dl_mime = dl.get("mime_type") if isinstance(dl, dict) else getattr(dl, "mime_type", "")
+                    dl_url = dl.get("url") if isinstance(dl, dict) else getattr(dl, "url", "")
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="urlscan.io Sandbox",
+                        finding=f"Dynamic sandbox intercepted payload download: '{dl_name}' ({dl_mime}) from {dl_url}.",
+                        severity="high",
+                        details={
+                            "url": dl_url,
+                            "filename": dl_name,
+                            "mime_type": dl_mime,
+                        },
+                    ))
+
+    # Cross-vector correlation: Sandbox malicious + ML Phishing
+    if has_sandbox_malicious and is_ml_phish:
+        evidence.append(CorrelatedEvidenceItem(
+            source="Cross-Vector",
+            finding="CORRELATION DETECTED: Remote urlscan.io dynamic execution confirmed malicious URL in email classified as phishing by ML.",
+            severity="critical",
+            details={"vectors": ["ML", "urlscan.io Sandbox"]},
+        ))
+
+    # Cross-vector correlation: Sandbox payload download
+    if has_sandbox_downloads:
+        evidence.append(CorrelatedEvidenceItem(
+            source="Cross-Vector",
+            finding="CORRELATION DETECTED: Dynamic URL analysis detected payload download linked to email content.",
+            severity="high",
+            details={"vectors": ["URL Sandbox", "Download/Payload"]},
         ))
 
     # Convert to standard dict representations

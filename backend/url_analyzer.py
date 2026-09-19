@@ -222,13 +222,18 @@ def _analyze_single_url(
     )
 
 
-def analyze_urls(text_body: str, html_body: str) -> URLAnalysis:
+def analyze_urls(
+    text_body: str,
+    html_body: str,
+    additional_urls: list[str] | None = None,
+) -> URLAnalysis:
     """
-    Extract and analyze all URLs from email body text and HTML.
+    Extract and analyze all URLs from email body text, HTML, and attachments.
 
     Args:
         text_body: Plain-text body of the email.
         html_body: HTML body of the email.
+        additional_urls: Optional list of URLs extracted from attachments or documents.
 
     Returns:
         URLAnalysis with per-URL findings and aggregate stats.
@@ -240,6 +245,14 @@ def analyze_urls(text_body: str, html_body: str) -> URLAnalysis:
 
     seen: set[str] = set()
     url_display_pairs: list[tuple[str, str]] = []  # (url, display_text)
+
+    # ── Incorporate additional URLs (e.g. extracted from attachments) ──
+    if additional_urls:
+        for u in additional_urls:
+            u_clean = (u or "").strip().rstrip(".,;:)'\"")
+            if u_clean and u_clean not in seen:
+                seen.add(u_clean)
+                url_display_pairs.append((u_clean, "Attachment Embedded Link"))
 
     # ── Extract from plain text ──────────────────────────────────
     for m in _URL_REGEX.finditer(text_body or ""):

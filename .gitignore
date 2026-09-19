@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -5,14 +6,31 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.venv/
+venv/
+
+# Environment / secrets — NEVER commit these
 .env
+backend/.env
+*.env
+
+# Trained ML models (large binary files)
 *.pkl
 
-# Large dataset files (too large for GitHub)
+# Large dataset files (too large for GitHub — download separately)
 phishing_email.csv
 CEAS_08.csv
 Enron.csv
 
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb
+
 # macOS
 .DS_Store
-.ipynb_checkpoints/
+Thumbs.db
+
+# Test / scratch PDF files
+d1.pdf
+test.pdf
+test3.pdf

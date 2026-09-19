@@ -346,12 +346,17 @@ def get_ip_geolocation(ip: str) -> dict[str, Any]:
         return dict(result)
 
     except urllib.error.HTTPError as e:
-        status = "unavailable" if e.code == 429 else "error"
-        if e.code in (401, 403):
-            reason = "IPinfo API authentication failed (invalid or unauthorized token)"
+        if e.code == 404:
+            status = "not_found"
+            reason = "IPinfo returned no intelligence for this IP"
         elif e.code == 429:
+            status = "unavailable"
             reason = "IPinfo API rate limit exceeded"
+        elif e.code in (401, 403):
+            status = "error"
+            reason = "IPinfo API authentication failed (invalid or unauthorized token)"
         else:
+            status = "error"
             reason = f"IPinfo API HTTP error {e.code}"
 
         result = {
@@ -481,6 +486,8 @@ def geolocate_ips(ip_list: list[str]) -> list[GeoRecord]:
         return records
 
     for ip in ip_list:
-        records.append(get_ip_geolocation_record(ip))
+        clean = (ip or "").strip()
+        if clean:
+            records.append(get_ip_geolocation_record(clean))
 
     return records

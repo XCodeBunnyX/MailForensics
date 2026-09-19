@@ -240,14 +240,80 @@ def _score_domain(domain_intel: DomainIntelligence) -> tuple[int, list[EvidenceI
     return sub_score, evidence
 
 
-def _score_urls(url_analysis: URLAnalysis) -> tuple[int, list[EvidenceItem]]:
-    """Compute sub-score from URL analysis."""
+def _score_urls(
+    url_analysis: URLAnalysis,
+    url_sandbox: Optional[Any] = None,
+) -> tuple[int, list[EvidenceItem]]:
+    """Compute sub-score from static URL analysis and dynamic sandbox analysis."""
     evidence: list[EvidenceItem] = []
 
-    if url_analysis.total_count == 0:
+    has_urls = url_analysis.total_count > 0 or (url_sandbox and getattr(url_sandbox, "total_scanned", 0) > 0)
+    if not has_urls:
         return 10, []   # no URLs → low risk contribution
 
-    if url_analysis.suspicious_count == 0:
+    max_url_score = max((f.risk_score for f in url_analysis.findings), default=0)
+
+    # Static URL evidence
+    for finding in url_analysis.findings:
+        if finding.risk_score >= 30:
+            evidence.append(EvidenceItem(
+                signal="URL Analysis",
+                status="SUSPICIOUS" if finding.risk_score < 60 else "MALICIOUS",
+                impact=_impact_label(finding.risk_score),
+                explanation=(
+                    f"URL '{finding.url[:80]}' — "
+                    + "; ".join(finding.reasons[:3])
+                ),
+            ))
+
+    # Dynamic sandbox findings (urlscan.io)
+    if url_sandbox:
+        for sf in getattr(url_sandbox, "findings", []):
+            if sf.verdict == "MALICIOUS" or sf.is_malicious:
+                max_url_score = max(max_url_score, max(sf.malicious_score, 80))
+                evidence.append(EvidenceItem(
+                    signal="URL Dynamic Sandbox",
+                    status="MALICIOUS",
+                    impact="HIGH",
+                    explanation=(
+                        f"urlscan.io dynamic execution flagged URL '{sf.submitted_url[:70]}' as MALICIOUS "
+                        f"(score: {sf.malicious_score}/100) — " + "; ".join(sf.reasons[:2])
+                    ),
+                ))
+            elif getattr(sf, "content_category", None) == "ADULT_CONTENT" or "ADULT_CONTENT_DETECTED" in getattr(sf, "behavior_indicators", []):
+                # Adult content contributes to suspicious/unwanted-content assessment, NOT malware
+                max_url_score = max(max_url_score, 40)
+                evidence.append(EvidenceItem(
+                    signal="URL Dynamic Sandbox",
+                    status="SUSPICIOUS",
+                    impact="MEDIUM",
+                    explanation=(
+                        f"Adult content detected on destination URL '{sf.submitted_url[:70]}' "
+                        "(unwanted/suspicious content; not classified as malware)."
+                    ),
+                ))
+            elif sf.verdict == "SUSPICIOUS" or (sf.downloads and len(sf.downloads) > 0):
+                max_url_score = max(max_url_score, max(sf.malicious_score, 45))
+                dl_note = f" Triggered download of {len(sf.downloads)} payload(s)." if sf.downloads else ""
+                evidence.append(EvidenceItem(
+                    signal="URL Dynamic Sandbox",
+                    status="SUSPICIOUS",
+                    impact="MEDIUM",
+                    explanation=(
+                        f"urlscan.io dynamic execution detected suspicious behavior on '{sf.submitted_url[:70]}'.{dl_note} "
+                        + "; ".join(sf.reasons[:2])
+                    ),
+                ))
+            elif sf.verdict == "CLEAN" and not any(e.status in ("SUSPICIOUS", "MALICIOUS") for e in evidence):
+                evidence.append(EvidenceItem(
+                    signal="URL Dynamic Sandbox",
+                    status="CLEAN",
+                    impact="POSITIVE",
+                    explanation=f"urlscan.io dynamic execution completed with no threats detected for '{sf.submitted_url[:70]}'.",
+                    is_positive=True,
+                ))
+
+    if not evidence and url_analysis.suspicious_count == 0:
         evidence.append(EvidenceItem(
             signal="URL Analysis",
             status="CLEAN",
@@ -257,42 +323,24 @@ def _score_urls(url_analysis: URLAnalysis) -> tuple[int, list[EvidenceItem]]:
         ))
         return 10, evidence
 
-    # Score based on worst URL + proportion suspicious
-    max_url_score = max((f.risk_score for f in url_analysis.findings), default=0)
-    proportion = url_analysis.suspicious_count / url_analysis.total_count
-    sub_score = int(max_url_score * 0.7 + proportion * 30)
+    # Calculate sub-score proportionally
+    prop = (url_analysis.suspicious_count / url_analysis.total_count) if url_analysis.total_count else 0.5
+    sub_score = int(max_url_score * 0.7 + prop * 30) if url_analysis.total_count else max_url_score
+    if any(e.status in ("MALICIOUS", "SUSPICIOUS") for e in evidence):
+        sub_score = max(sub_score, max_url_score)
 
-    for finding in url_analysis.findings:
-        if finding.risk_score >= 30:
-            evidence.append(EvidenceItem(
-                signal="URL Analysis",
-                status="SUSPICIOUS",
-                impact=_impact_label(finding.risk_score),
-                explanation=(
-                    f"URL '{finding.url[:80]}' — "
-                    + "; ".join(finding.reasons[:3])
-                ),
-            ))
-
-    return min(sub_score, 100), evidence
+    return min(max(sub_score, 10), 100), evidence
 
 
-def _score_attachments(att_analysis: AttachmentAnalysis) -> tuple[int, list[EvidenceItem]]:
-    """Compute sub-score from attachment analysis."""
+def _score_attachments(
+    att_analysis: AttachmentAnalysis,
+    att_content_analysis: Optional[Any] = None,
+) -> tuple[int, list[EvidenceItem]]:
+    """Compute sub-score from attachment analysis (static + deep content)."""
     evidence: list[EvidenceItem] = []
 
     if att_analysis.total_count == 0:
         return 0, []   # no attachments → zero contribution
-
-    if att_analysis.suspicious_count == 0:
-        evidence.append(EvidenceItem(
-            signal="Attachment Analysis",
-            status="CLEAN",
-            impact="POSITIVE",
-            explanation="No suspicious attachment characteristics found.",
-            is_positive=True,
-        ))
-        return 10, evidence
 
     max_score = max((f.risk_score for f in att_analysis.findings), default=0)
 
@@ -308,6 +356,105 @@ def _score_attachments(att_analysis: AttachmentAnalysis) -> tuple[int, list[Evid
                 ),
             ))
 
+    # Deep content findings integration
+    if att_content_analysis:
+        for cf in getattr(att_content_analysis, "findings", []):
+            if cf.encrypted:
+                # Cautious impact: encryption obscures inspection
+                evidence.append(EvidenceItem(
+                    signal="Attachment Content",
+                    status="LIMITED",
+                    impact="MEDIUM",
+                    explanation=(
+                        f"Attachment '{cf.filename}' is password protected / encrypted. "
+                        "Content cannot be verified safe and is marked UNKNOWN / NOT ANALYZABLE."
+                    ),
+                ))
+            elif cf.content_analysis_status == "ANALYZED":
+                if cf.javascript_detected:
+                    max_score = max(max_score, 80)
+                    evidence.append(EvidenceItem(
+                        signal="Attachment Content",
+                        status="DANGEROUS",
+                        impact="HIGH",
+                        explanation=(
+                            f"Attachment '{cf.filename}' contains embedded JavaScript code or script tokens."
+                        ),
+                    ))
+                if "/Launch" in cf.actions_detected:
+                    max_score = max(max_score, 85)
+                    evidence.append(EvidenceItem(
+                        signal="Attachment Content",
+                        status="DANGEROUS",
+                        impact="HIGH",
+                        explanation=(
+                            f"Attachment '{cf.filename}' contains a /Launch action executing external commands."
+                        ),
+                    ))
+                elif "/OpenAction" in cf.actions_detected:
+                    max_score = max(max_score, 60)
+                    evidence.append(EvidenceItem(
+                        signal="Attachment Content",
+                        status="SUSPICIOUS",
+                        impact="MEDIUM",
+                        explanation=(
+                            f"Attachment '{cf.filename}' contains an automated /OpenAction execution trigger."
+                        ),
+                    ))
+                if cf.embedded_files:
+                    max_score = max(max_score, 75)
+                    evidence.append(EvidenceItem(
+                        signal="Attachment Content",
+                        status="SUSPICIOUS",
+                        impact="HIGH",
+                        explanation=(
+                            f"Attachment '{cf.filename}' encapsulates embedded internal file payloads."
+                        ),
+                    ))
+
+            if cf.content_risk_score >= 30 and not any(e.signal == "Attachment Content" and cf.filename in e.explanation for e in evidence):
+                evidence.append(EvidenceItem(
+                    signal="Attachment Content",
+                    status="DANGEROUS" if cf.content_risk_score >= 60 else "SUSPICIOUS",
+                    impact="HIGH" if cf.content_risk_score >= 60 else "MEDIUM",
+                    explanation=(
+                        f"Attachment '{cf.filename}' contains suspicious/high-risk content or embedded URLs "
+                        f"(Verdict: {cf.content_verdict}, Risk Score: {cf.content_risk_score}/100) — "
+                        + "; ".join(cf.reasons[:2])
+                    ),
+                ))
+
+            if cf.content_risk_score > max_score:
+                max_score = cf.content_risk_score
+
+    # Check if any attachment is encrypted, limited, or unanalyzable
+    has_unverified = False
+    if att_content_analysis:
+        for cf in getattr(att_content_analysis, "findings", []):
+            if cf.encrypted or cf.content_analysis_status in ("LIMITED", "FAILED", "UNSUPPORTED") or cf.content_verdict in ("NOT_ANALYZABLE", "UNKNOWN"):
+                has_unverified = True
+                break
+
+    if not evidence and att_analysis.suspicious_count == 0:
+        if has_unverified:
+            evidence.append(EvidenceItem(
+                signal="Attachment Analysis",
+                status="NOT_ANALYZABLE",
+                impact="MEDIUM",
+                explanation="Attachment contains encrypted, limited, or unanalyzable files; contents could not be verified safe.",
+                is_positive=False,
+            ))
+            return max(35, max_score), evidence
+        else:
+            evidence.append(EvidenceItem(
+                signal="Attachment Analysis",
+                status="NO_THREATS_DETECTED",
+                impact="POSITIVE",
+                explanation="No suspicious attachment characteristics or dangerous content detected by analyzers.",
+                is_positive=True,
+            ))
+            return 10, evidence
+
     return min(max_score, 100), evidence
 
 
@@ -316,6 +463,9 @@ def _collect_limitations(
     url_analysis: URLAnalysis,
     ml: MLResult,
     header_intel: HeaderIntelligence,
+    att_content_analysis: Optional[Any] = None,
+    url_sandbox: Optional[Any] = None,
+    geo_records: Optional[Any] = None,
 ) -> list[str]:
     limitations: list[str] = []
     limitations.extend(ip_intel.limitations)
@@ -324,6 +474,39 @@ def _collect_limitations(
         limitations.append(ml.note)
     for warn in header_intel.warnings:
         limitations.append(warn)
+
+    if att_content_analysis:
+        for cf in getattr(att_content_analysis, "findings", []):
+            if cf.encrypted:
+                limitations.append(
+                    f"Attachment '{cf.filename}' is password protected; content analysis was limited."
+                )
+            elif cf.content_analysis_status == "FAILED":
+                limitations.append(
+                    f"Attachment '{cf.filename}' content parsing encountered an error: {cf.reason or 'malformed'}"
+                )
+
+    if url_sandbox:
+        limitations.extend(getattr(url_sandbox, "limitations", []))
+        for sf in getattr(url_sandbox, "findings", []):
+            if sf.status in ("ERROR", "TIMEOUT", "FAILED"):
+                limitations.append(
+                    f"urlscan.io sandbox for '{sf.submitted_url[:50]}': Status {sf.status} (Reason: {sf.error or 'analysis incomplete'})"
+                )
+            elif sf.verdict == "UNKNOWN" and getattr(sf, "mode", "") == "MOCK":
+                limitations.append(
+                    f"urlscan.io sandbox for '{sf.submitted_url[:50]}': Mock mode (inconclusive / UNKNOWN; live analysis not executed)"
+                )
+
+    if geo_records:
+        for g in geo_records:
+            status = getattr(g, "status", "success")
+            if status in ("error", "unavailable", "not_found"):
+                reason = getattr(g, "reason", "no intelligence returned")
+                limitations.append(
+                    f"IPinfo observable infrastructure for {g.ip}: Status {status.upper()} (Reason: {reason})"
+                )
+
     return limitations
 
 
@@ -337,6 +520,9 @@ def compute_threat_score(
     url_analysis: URLAnalysis,
     att_analysis: AttachmentAnalysis,
     header_intel: HeaderIntelligence,
+    att_content_analysis: Optional[Any] = None,
+    url_sandbox: Optional[Any] = None,
+    geo_records: Optional[Any] = None,
 ) -> ThreatScore:
     """
     Compute a normalized, explainable threat score from all signals.
@@ -349,6 +535,9 @@ def compute_threat_score(
         url_analysis: URL analysis result
         att_analysis: Attachment analysis result
         header_intel: Header analysis result
+        att_content_analysis: Optional deep attachment content analysis
+        url_sandbox:  Optional dynamic urlscan.io sandbox analysis
+        geo_records:  Optional observable infrastructure IPinfo records
 
     Returns:
         ThreatScore with final score, verdict, and full evidence.
@@ -360,8 +549,8 @@ def compute_threat_score(
     auth_score, auth_ev = _score_authentication(auth)
     ip_score,   ip_ev   = _score_ip(ip_intel)
     dom_score,  dom_ev  = _score_domain(domain_intel)
-    url_score,  url_ev  = _score_urls(url_analysis)
-    att_score,  att_ev  = _score_attachments(att_analysis)
+    url_score,  url_ev  = _score_urls(url_analysis, url_sandbox)
+    att_score,  att_ev  = _score_attachments(att_analysis, att_content_analysis)
 
     sub_scores = {
         "ml":             ml_score,
@@ -387,7 +576,15 @@ def compute_threat_score(
     impact_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     negative_ev.sort(key=lambda e: impact_order.get(e.impact, 3))
 
-    limitations = _collect_limitations(ip_intel, url_analysis, ml, header_intel)
+    limitations = _collect_limitations(
+        ip_intel=ip_intel,
+        url_analysis=url_analysis,
+        ml=ml,
+        header_intel=header_intel,
+        att_content_analysis=att_content_analysis,
+        url_sandbox=url_sandbox,
+        geo_records=geo_records,
+    )
 
     return ThreatScore(
         threat_score=final_score,
