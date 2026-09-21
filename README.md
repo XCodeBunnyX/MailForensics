@@ -40,7 +40,7 @@ GmailGuard is a **defensive cybersecurity platform** that accepts a suspicious e
 | **IP Intelligence** | Public IP extraction, ASN, ISP, organization lookup |
 | **IP Geolocation** | Country / region / city via IPinfo API (approximate infrastructure location) |
 | **URL Analysis** | URL extraction, suspicious TLD detection, IP-based URLs, HTTPS check |
-| **URL Sandbox** | Dynamic remote analysis via urlscan.io (never executed locally) |
+| **URL Sandbox** | Dynamic browser execution via local Browserless Chromium in Docker (isolated, Playwright-driven, disposable contexts) |
 | **Domain Intelligence** | Domain reputation, forensic DNS history |
 | **Attachment Analysis** | Safe static analysis — filename, MIME, SHA-256, suspicious extensions; **no execution** |
 | **Attachment Content** | PDF text extraction and keyword scanning (static only) |
@@ -50,7 +50,7 @@ GmailGuard is a **defensive cybersecurity platform** that accepts a suspicious e
 | **Evidence Correlator** | Cross-vector evidence correlation engine |
 | **Threat Scorer** | Explainable 0–100 threat score with per-category breakdown |
 | **Forensic Report** | Full structured JSON report with IOCs, timeline, graph data |
-| **SOC Dashboard** | Single-page web UI with D3 relationship graph, maps, and charts |
+| **SOC Dashboard** | Single-page web UI with D3 relationship graph, live browser screenshots, and telemetry |
 
 ---
 
@@ -67,7 +67,7 @@ Browser  ──►  FastAPI (backend/)  ──►  Analysis Pipeline
                                 │  ip_intel.      │
                                 │  geolocation    │
                                 │  url_analyzer   │
-                                │  url_sandbox    │
+                                │  url_sandbox ───┼──► Local Browserless Docker (Chromium)
                                 │  domain_intel   │
                                 │  attach_anal.   │
                                 │  ml_classif.    │
@@ -77,6 +77,31 @@ Browser  ──►  FastAPI (backend/)  ──►  Analysis Pipeline
                                 │  threat_scorer  │
                                 │  report_gen.    │
                                 └─────────────────┘
+```
+
+### Browserless Local Sandbox Architecture
+
+```
+Email URL
+  │
+  ▼
+GmailGuard Backend
+  │  (SSRF Guard: blocks localhost, RFC 1918 private IPs, link-local metadata)
+  ▼
+Local Browserless Docker (ghcr.io/browserless/chromium :3000)
+  │
+  ▼
+Playwright over CDP/WebSocket
+  │
+  ├─► Disposable Browser Context (no persistent cookies/storage)
+  ├─► Live Page Screenshot Capture (/screenshots/{uuid}.png)
+  ├─► Final Effective URL & Redirect Chain Tracking
+  ├─► Network Monitoring (contacted domains, IPs, status codes, failed requests)
+  ├─► JavaScript Telemetry (console messages, console/page errors)
+  └─► Download Interception & Quarantine (zero execution, auto-cleanup)
+  │
+  ▼
+Evidence Correlator ──► Threat Scorer ──► Forensic Report ──► SOC Dashboard
 ```
 
 The FastAPI backend serves both the REST API **and** the static frontend from a single process — no separate frontend server needed.
@@ -140,13 +165,12 @@ MailForensics/
 
 ## Prerequisites
 
-| Requirement | Version |
-|---|---|
-| Python | 3.11 or higher |
-| pip | Latest |
-| Git | Any recent version |
-
-No Docker required for local development.
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.11 or higher | Backend & ML classifier |
+| pip | Latest | Python package management |
+| Git | Any recent version | Version control |
+| Docker | Recent | For self-hosted Browserless Chromium sandbox |
 
 ---
 
@@ -159,7 +183,23 @@ git clone https://github.com/XCodeBunnyX/MailForensics.git
 cd MailForensics
 ```
 
-### 2. Create and activate a virtual environment
+### 2. Start the Local Browserless Docker Sandbox
+
+GmailGuard uses a self-hosted Browserless Chromium container for safe, isolated dynamic URL inspection.
+
+> **Important**: Browserless must be running before GmailGuard performs dynamic URL investigations.
+
+```bash
+docker run --rm \
+  -p 3000:3000 \
+  -e "TOKEN=gmailguard-local" \
+  -e "CONCURRENT=2" \
+  -e "TIMEOUT=60000" \
+  --shm-size=2g \
+  ghcr.io/browserless/chromium
+```
+
+### 3. Create and activate a virtual environment
 
 ```bash
 python3 -m venv .venv
@@ -167,26 +207,26 @@ source .venv/bin/activate      # macOS / Linux
 # .venv\Scripts\activate       # Windows
 ```
 
-### 3. Install dependencies
+### 4. Install dependencies
 
 ```bash
 pip install -r backend/requirements.txt
 ```
 
-### 4. Configure environment variables
+### 5. Configure environment variables
 
 ```bash
 cp .env.example backend/.env
-# Open backend/.env and fill in your API keys (see Environment Variables below)
+# Open backend/.env and verify BROWSERLESS_URL=http://localhost:3000 and BROWSERLESS_TOKEN=gmailguard-local
 ```
 
-### 5. Start the server
+### 6. Start the server
 
 ```bash
 uvicorn backend.api:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 6. Open the dashboard
+### 7. Open the dashboard
 
 Open your browser at **http://localhost:8000**
 
@@ -196,20 +236,23 @@ The dashboard and API are served from the same process — no separate frontend 
 
 ## Environment Variables
 
-Copy `.env.example` to `backend/.env` and fill in the values.
+Copy `.env.example` to `backend/.env` and configure as needed.
 
-| Variable | Required | Description |
+| Variable | Default / Required | Description |
 |---|---|---|
-| `IPINFO_TOKEN` | Recommended | IPinfo API token for IP geolocation. Free tier: 50k req/mo. Get at [ipinfo.io](https://ipinfo.io/signup) |
-| `URLSCAN_API_KEY` | Optional | urlscan.io API key for dynamic URL sandbox. Free tier available at [urlscan.io](https://urlscan.io/user/signup) |
-| `URLSCAN_ENABLED` | Optional | `true` to enable URL sandbox (default: `true`) |
-| `MOCK_URLSCAN` | Optional | `true` to use mock data instead of live urlscan.io calls (default: `false`) |
+| `BROWSERLESS_URL` | `http://localhost:3000` | Local Browserless Docker HTTP/WebSocket endpoint |
+| `BROWSERLESS_TOKEN` | `gmailguard-local` | Authentication token for Browserless instance |
+| `BROWSER_SANDBOX_ENABLED` | `true` | Set to `true` to enable dynamic URL investigation |
+| `BROWSER_SANDBOX_TIMEOUT_MS` | `15000` | Page navigation and capture timeout in milliseconds |
+| `BROWSER_SANDBOX_MAX_URLS` | `3` | Maximum number of URLs investigated per email |
+| `MOCK_URLSCAN` | `false` | `true` to use mock sandbox data instead of live Browserless |
+| `IPINFO_TOKEN` | Recommended | IPinfo API token for IP geolocation. Get at [ipinfo.io](https://ipinfo.io/signup) |
 | `VIRUSTOTAL_API_KEY` | Optional | VirusTotal API key for forensic domain intelligence |
 | `SECURITYTRAILS_API_KEY` | Optional | SecurityTrails API key for DNS history |
-| `FORENSIC_PROVIDER` | Optional | `virustotal` or `securitytrails` (default: `virustotal`) |
-| `MOCK_THREAT_INTEL` | Optional | `true` = use mock domain intel (default: `true`) |
-| `MOCK_OSINT` | Optional | `true` = use mock OSINT data (default: `true`) |
-| `MOCK_PHISHTANK` | Optional | `true` = use mock PhishTank data (default: `true`) |
+| `FORENSIC_PROVIDER` | `virustotal` | `virustotal` or `securitytrails` |
+| `MOCK_THREAT_INTEL` | `true` | `true` = use mock domain intel (default: `true`) |
+| `MOCK_OSINT` | `true` | `true` = use mock OSINT data (default: `true`) |
+| `MOCK_PHISHTANK` | `true` | `true` = use mock PhishTank data (default: `true`) |
 | `PHISHTANK_API_KEY` | Optional | PhishTank API key for live URL lookups |
 
 > **Without any API keys**, the platform runs fully in demo/mock mode and still produces a complete forensic report. API keys only enable live external lookups.
@@ -388,12 +431,15 @@ Models will be saved to `backend/models/`.
 
 ## Security Notes
 
-- **No file execution**: Attachments are inspected statically only. No uploaded file is ever executed.
-- **No local URL fetching**: Suspicious URLs are analyzed structurally or via remote sandbox (urlscan.io), never fetched locally.
-- **API keys**: Never committed to Git. Always loaded from `backend/.env` (excluded via `.gitignore`).
-- **File size limit**: Upload size is capped at the configured `MAX_UPLOAD_BYTES` limit.
-- **Defensive only**: This platform is designed exclusively for authorized forensic investigation of suspicious emails.
-- **Geolocation disclaimer**: IP geolocation indicates approximate *infrastructure location*, not the attacker's physical location.
+- **Isolated Browser Sandbox**: Dynamic URL investigations execute inside a self-hosted Browserless Chromium container in Docker via Playwright over WebSocket. Each URL scan creates an ephemeral, disposable browser context with zero persistence (no shared cookies, localStorage, or sessions). The Docker container runs isolated and does not mount host filesystems, Docker sockets, or project source code. *Note*: This provides isolated containerized browser process isolation; it is not a VM-level hypervisor sandbox.
+- **SSRF Protection**: All target URLs undergo strict pre-flight validation before navigation. Requests resolving to `localhost`, `127.0.0.0/8`, `::1`, RFC 1918 private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local/cloud metadata IP (`169.254.169.254`), broadcast, and non-standard schemes (`file:`, `javascript:`, `ftp:`) are blocked outright.
+- **Download Quarantine & Auto-Cleanup**: Browser-triggered downloads are intercepted, strictly prevented from executing, quarantined into temporary storage, and immediately cleaned up after analysis.
+- **No File Execution**: Attachments are inspected statically only (MIME type, SHA-256 hash, extensions, PDF text scanning). No uploaded file or attachment is ever executed.
+- **No External URL Leaks**: Suspicious URLs are never transmitted to third-party public scanners like urlscan.io or VirusTotal. All dynamic analysis runs locally inside your private Docker environment.
+- **API Keys & Secrets**: Never committed to Git. Always loaded from `backend/.env` (excluded via `.gitignore`).
+- **Resource Limits**: Strict timeout safeguards (`BROWSER_SANDBOX_TIMEOUT_MS`), maximum URLs per email (`BROWSER_SANDBOX_MAX_URLS`), and network event caps prevent resource exhaustion.
+- **Defensive Purpose Only**: This platform is designed exclusively for authorized forensic investigation of suspicious emails.
+- **Geolocation Disclaimer**: IP geolocation indicates approximate *infrastructure location*, not the attacker's physical location.
 
 ---
 

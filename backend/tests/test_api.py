@@ -270,3 +270,29 @@ class TestAnalyzeTextEndpoint:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "GmailGuard" in resp.text or "MailForensics" in resp.text
+
+
+# ── 9. Gemini AI Endpoints ────────────────────────────────────────
+
+class TestGeminiEndpoints:
+
+    def test_ai_status_endpoint(self):
+        resp = client.get("/ai/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "configured" in data
+        assert "available" in data
+        assert "candidate_models" in data
+
+    def test_gemini_analyze_endpoint_unconfigured(self):
+        from unittest.mock import patch
+        with patch("backend.gemini_security._get_api_key", return_value=""):
+            resp = client.post(
+                "/ai/gemini-analyze",
+                json={"raw_email": "Subject: Test", "report": {}},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "available" in data
+        assert "classification" in data
+        assert "risk_level" in data

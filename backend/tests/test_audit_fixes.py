@@ -388,7 +388,7 @@ class TestThreatScoringAuditFixes:
         assert score.threat_score > 14, "Malicious URL in sandbox must significantly increase score"
         assert score.sub_scores["url"] == 96
         evidence_texts = " ".join(e.explanation for e in score.evidence)
-        assert "urlscan.io dynamic execution flagged URL" in evidence_texts
+        assert ("urlscan.io dynamic execution flagged URL" in evidence_texts or "Browser sandbox dynamic execution flagged URL" in evidence_texts)
         assert "MALICIOUS" in evidence_texts
 
     def test_url_sandbox_adult_content_adds_suspicious_evidence(self):

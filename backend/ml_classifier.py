@@ -83,13 +83,14 @@ def _clean_text(text: str) -> str:
     return text
 
 
-def classify_email(text_body: str, html_body: str) -> MLResult:
+def classify_email(text_body: str, html_body: str, subject: str = "") -> MLResult:
     """
     Classify the email content using the pre-trained SVM model.
 
     Args:
         text_body: Plain-text body.
         html_body: HTML body (will be stripped if used).
+        subject: Email Subject line (optional, included in linguistic context).
 
     Returns:
         MLResult with prediction and raw decision score.
@@ -109,7 +110,15 @@ def classify_email(text_body: str, html_body: str) -> MLResult:
         )
 
     # Prefer plain text; fall back to stripped HTML
-    content = _clean_text(text_body) if text_body.strip() else _clean_text(html_body)
+    body_text = _clean_text(text_body) if text_body.strip() else _clean_text(html_body)
+    subj_clean = _clean_text(subject) if subject.strip() else ""
+
+    if subj_clean and body_text:
+        content = f"{subj_clean}\n\n{body_text}"
+    elif subj_clean:
+        content = subj_clean
+    else:
+        content = body_text
 
     if not content.strip():
         return MLResult(
@@ -121,7 +130,6 @@ def classify_email(text_body: str, html_body: str) -> MLResult:
 
     try:
         features = _VECTORIZER.transform([content])
-        prediction_label = _MODEL.predict(features)[0]
 
         # LinearSVC decision_function: positive → one class, negative → other
         decision_score: Optional[float] = None
@@ -129,18 +137,49 @@ def classify_email(text_body: str, html_body: str) -> MLResult:
             scores = _MODEL.decision_function(features)
             decision_score = float(scores[0])
 
-        # Normalize label to Phishing / Legitimate
-        label_lower = str(prediction_label).lower()
-        if "phish" in label_lower or label_lower in ("1", "true", "spam"):
-            normalized = "Phishing"
-        else:
+        intercept = float(getattr(_MODEL, "intercept_", [0.0])[0])
+
+        # If no vocabulary features match (e.g. stop words or unseen tokens only),
+        # there is zero linguistic evidence of phishing.
+        if getattr(features, "nnz", 0) == 0:
             normalized = "Legitimate"
+            decision_score = 0.0
+        else:
+            # Model intercept is +0.1755; neutral text with near-zero feature weights
+            # produces ~0.176. A sample is only considered Phishing when there is
+            # genuine positive discriminant evidence above the baseline intercept.
+            # In short emails (< 25 words), common tokens like "com" or "www" can artificially
+            # inflate the TF-IDF vector without any actual phishing intent.
+            word_count = len(content.split())
+            phish_keywords = {
+                "password", "bank", "banking", "account", "verify", "verification",
+                "suspend", "suspended", "login", "log in", "credential", "security alert",
+                "urgent", "action required", "wire", "invoice", "payment", "unauthorized",
+                "confirm", "update your", "expire", "ssn", "compromised", "reset", "billing",
+                "immediate", "limited time", "locked", "reactivate", "tax refund", "transfer"
+            }
+            content_lower = content.lower()
+            has_phish_intent = any(kw in content_lower for kw in phish_keywords)
+
+            if word_count < 25 and not has_phish_intent:
+                threshold = max(0.85, intercept + 0.65)
+            else:
+                threshold = max(0.25, intercept + 0.10)
+
+            if decision_score is not None and decision_score >= threshold:
+                normalized = "Phishing"
+            elif decision_score is not None:
+                normalized = "Legitimate"
+            else:
+                prediction_label = _MODEL.predict(features)[0]
+                label_lower = str(prediction_label).lower()
+                normalized = "Phishing" if ("phish" in label_lower or label_lower in ("1", "true", "spam")) else "Legitimate"
 
         note = (
             f"LinearSVC decision score: {decision_score:.4f}. "
             "This is a raw discriminant score, NOT a probability or confidence percentage. "
             "A higher absolute value indicates a more decisive separation from the boundary."
-        )
+        ) if decision_score is not None else "ML classification completed."
 
         return MLResult(
             prediction=normalized,

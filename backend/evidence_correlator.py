@@ -31,6 +31,7 @@ from .url_analyzer import URLAnalysis
 from .attachment_analyzer import AttachmentAnalysis
 from .osint_intelligence import OSINTAnalysisResult
 from .forensic_domain_intelligence import ForensicIntelligenceResult
+from .url_sandbox import _extract_apex_domain
 from . import config
 
 
@@ -612,9 +613,9 @@ def correlate_evidence(
             if f_verdict == "MALICIOUS" or f_is_malicious:
                 has_sandbox_malicious = True
                 evidence.append(CorrelatedEvidenceItem(
-                    source="urlscan.io Sandbox",
+                    source="Browser Sandbox",
                     finding=(
-                        f"Dynamic execution of '{f_submitted_url}' in remote cloud sandbox "
+                        f"Dynamic execution of '{f_submitted_url}' in isolated browser sandbox "
                         f"confirmed MALICIOUS activity (Score: {f_score}/100, "
                         f"Categories: {f_categories or ['phishing']})."
                     ),
@@ -630,7 +631,7 @@ def correlate_evidence(
                 ))
             elif f_verdict == "SUSPICIOUS":
                 evidence.append(CorrelatedEvidenceItem(
-                    source="urlscan.io Sandbox",
+                    source="Browser Sandbox",
                     finding=(
                         f"Dynamic execution of '{f_submitted_url}' revealed suspicious sandbox behavior "
                         f"(Score: {f_score}/100)."
@@ -648,7 +649,7 @@ def correlate_evidence(
 
             if getattr(f, "content_category", None) == "ADULT_CONTENT" or "ADULT_CONTENT_DETECTED" in (getattr(f, "behavior_indicators", []) or []):
                 evidence.append(CorrelatedEvidenceItem(
-                    source="urlscan.io Sandbox",
+                    source="Browser Sandbox",
                     finding=f"Adult content detected on destination URL '{f_submitted_url}' (unwanted/suspicious content; not classified as malware).",
                     severity="medium",
                     details={"url": f_submitted_url, "category": "ADULT_CONTENT"},
@@ -656,24 +657,43 @@ def correlate_evidence(
 
             if getattr(f, "status", "") in ("ERROR", "TIMEOUT"):
                 evidence.append(CorrelatedEvidenceItem(
-                    source="urlscan.io Sandbox",
+                    source="Browser Sandbox",
                     finding=f"Dynamic URL sandbox for '{f_submitted_url}' encountered limitation: Status {getattr(f, 'status', 'ERROR')} ({getattr(f, 'error', 'analysis incomplete')}).",
                     severity="info",
                     details={"url": f_submitted_url, "status": getattr(f, "status", "ERROR")},
                 ))
 
-            # Dynamic redirect unmasking
-            if f_redirects or (f_effective_url and f_submitted_url and f_effective_url.rstrip("/").lower() != f_submitted_url.rstrip("/").lower()):
-                evidence.append(CorrelatedEvidenceItem(
-                    source="urlscan.io Sandbox",
-                    finding=f"Dynamic URL sandbox unmasked redirection: '{f_submitted_url}' redirected to '{f_effective_url}'.",
-                    severity="medium",
-                    details={
-                        "submitted_url": f_submitted_url,
-                        "effective_url": f_effective_url,
-                        "redirect_count": len(f_redirects),
-                    },
-                ))
+            # Dynamic redirect unmasking (separate canonical from cross-domain)
+            if f_effective_url and f_submitted_url and f_effective_url.rstrip("/").lower() != f_submitted_url.rstrip("/").lower():
+                orig_apex = _extract_apex_domain(f_submitted_url)
+                eff_apex = _extract_apex_domain(f_effective_url)
+                is_same_apex = bool(orig_apex) and (orig_apex == eff_apex)
+                if is_same_apex:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Browser Sandbox",
+                        finding=f"Dynamic sandbox observed canonical redirection on same domain: '{f_submitted_url}' -> '{f_effective_url}'.",
+                        severity="info",
+                        details={
+                            "submitted_url": f_submitted_url,
+                            "effective_url": f_effective_url,
+                            "redirect_count": len(f_redirects),
+                            "canonical": True,
+                        },
+                        channel="forensic",
+                        evidence_class="OBSERVED",
+                    ))
+                else:
+                    evidence.append(CorrelatedEvidenceItem(
+                        source="Browser Sandbox",
+                        finding=f"Dynamic URL sandbox unmasked cross-domain redirection: '{f_submitted_url}' redirected to '{f_effective_url}'.",
+                        severity="medium",
+                        details={
+                            "submitted_url": f_submitted_url,
+                            "effective_url": f_effective_url,
+                            "redirect_count": len(f_redirects),
+                            "canonical": False,
+                        },
+                    ))
 
             # Download detection
             if f_downloads:
@@ -683,7 +703,7 @@ def correlate_evidence(
                     dl_mime = dl.get("mime_type") if isinstance(dl, dict) else getattr(dl, "mime_type", "")
                     dl_url = dl.get("url") if isinstance(dl, dict) else getattr(dl, "url", "")
                     evidence.append(CorrelatedEvidenceItem(
-                        source="urlscan.io Sandbox",
+                        source="Browser Sandbox",
                         finding=f"Dynamic sandbox intercepted payload download: '{dl_name}' ({dl_mime}) from {dl_url}.",
                         severity="high",
                         details={
@@ -697,9 +717,9 @@ def correlate_evidence(
     if has_sandbox_malicious and is_ml_phish:
         evidence.append(CorrelatedEvidenceItem(
             source="Cross-Vector",
-            finding="CORRELATION DETECTED: Remote urlscan.io dynamic execution confirmed malicious URL in email classified as phishing by ML.",
+            finding="CORRELATION DETECTED: Local browser dynamic execution confirmed malicious URL in email classified as phishing by ML.",
             severity="critical",
-            details={"vectors": ["ML", "urlscan.io Sandbox"]},
+            details={"vectors": ["ML", "Browser Sandbox"]},
         ))
 
     # Cross-vector correlation: Sandbox payload download

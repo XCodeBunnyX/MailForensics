@@ -11,3 +11,14 @@ python-dotenv>=1.0.0
 
 # Document and Attachment Inspection
 pypdf>=4.0.0
+
+# Gemini AI Contextual Security Reasoning
+google-genai>=2.0.0
+
+# Local Browserless Sandbox Telemetry & Automation
+playwright>=1.40.0
+
+# Official Gmail API & OAuth 2.0 Integration
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0

@@ -193,7 +193,7 @@ class ThreatReportNormalizer {
       anomalies: clientData.anomalies || []
     } : null;
 
-    // ── 11. URLs & PhishTank & urlscan.io Sandbox Verification ─────────
+    // ── 11. URLs & PhishTank & Browserless Sandbox Verification ─────────
     const urlsSection = r.urls || {};
     const phishTankData = r.forensics?.phishtank || null;
     const phishMatches = phishTankData?.matches || [];
@@ -318,6 +318,7 @@ class ThreatReportNormalizer {
 
     // Sub-scores
     const subScores = r.sub_scores || {};
+    const scoreBreakdown = r.score_breakdown || null;
 
     // Correlated cross-vector findings
     const correlatedEvidence = r.correlated_evidence || [];
@@ -356,6 +357,35 @@ class ThreatReportNormalizer {
       });
     }
 
+    // Gemini AI Contextual Security Intelligence
+    const rawGemini = r.gemini_analysis || r.ai_analysis || null;
+    const geminiAnalysis = rawGemini ? {
+      available: Boolean(rawGemini.available),
+      overallAssessment: String(rawGemini.overall_assessment || rawGemini.gemini_assessment || 'CAUTION').toUpperCase(),
+      plainLanguageSummary: rawGemini.plain_language_summary || rawGemini.summary || '',
+      whatThisEmailIsAbout: rawGemini.what_this_email_is_about || '',
+      likelyIntent: rawGemini.likely_intent || '',
+      contentCategory: Array.isArray(rawGemini.content_category) ? rawGemini.content_category : [],
+      securityConcerns: Array.isArray(rawGemini.security_concerns) ? rawGemini.security_concerns : [],
+      userActions: Array.isArray(rawGemini.user_actions) ? rawGemini.user_actions : (rawGemini.recommended_actions || []),
+      technicalFindingsSummary: rawGemini.technical_findings_summary || '',
+      pipelineScore: rawGemini.pipeline_score != null ? rawGemini.pipeline_score : threatScore,
+      pipelineVerdict: rawGemini.pipeline_verdict || verdictInfo.label,
+      geminiAssessment: String(rawGemini.gemini_assessment || rawGemini.overall_assessment || 'CAUTION').toUpperCase(),
+      confidence: rawGemini.confidence || 'MEDIUM',
+      classification: String(rawGemini.classification || 'unknown'),
+      riskLevel: String(rawGemini.risk_level || 'none').toLowerCase(),
+      summary: rawGemini.summary || rawGemini.plain_language_summary || '',
+      threatIndicators: Array.isArray(rawGemini.threat_indicators) ? rawGemini.threat_indicators : [],
+      socialEngineeringIndicators: Array.isArray(rawGemini.social_engineering_indicators) ? rawGemini.social_engineering_indicators : [],
+      suspiciousUrls: Array.isArray(rawGemini.suspicious_urls) ? rawGemini.suspicious_urls : [],
+      suspiciousDomains: Array.isArray(rawGemini.suspicious_domains) ? rawGemini.suspicious_domains : [],
+      recommendedActions: Array.isArray(rawGemini.recommended_actions) ? rawGemini.recommended_actions : (rawGemini.user_actions || []),
+      explanation: rawGemini.explanation || rawGemini.technical_findings_summary || '',
+      modelUsed: rawGemini.model_used || 'Gemini Flash',
+      reason: rawGemini.reason || '',
+    } : null;
+
     return {
       caseId,
       threatScore,
@@ -380,10 +410,12 @@ class ThreatReportNormalizer {
       evidence,
       positiveEvidence,
       subScores,
+      scoreBreakdown,
       correlatedEvidence,
       forensicScope,
       iocs,
       limitations: r.limitations || [],
+      geminiAnalysis,
       rawHeaders: rawEmail,
       rawResult: r
     };

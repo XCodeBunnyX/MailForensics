@@ -17,6 +17,19 @@ class GmailGuardApp {
     this.activeFile = null;
     this.activeResultTab = 'overview';
     this.isAnalyzing = false;
+
+    // Gmail & Gemini state
+    this.gmailConnected = false;
+    this.gmailUser = null;
+    this.gmailMessages = [];
+    this.gmailLoading = false;
+    this.analysisState = {}; // Per-email: emailId -> { status: 'idle'|'analyzing'|'completed'|'error', threatScore, verdict, geminiAssessment, error, timestamp }
+    this.analysisResults = {}; // Per-email: emailId -> full normalized forensic report
+    this.activeGmailFilter = 'all';
+    this.activeGmailSearch = '';
+    this.gmailCurrentPage = 1;
+    this.gmailPageSize = 8;
+    this.geminiOverview = null;
   }
 
   init() {
@@ -29,6 +42,35 @@ class GmailGuardApp {
     // Check backend health immediately and periodically
     this.checkBackendHealth();
     this.healthInterval = setInterval(() => this.checkBackendHealth(), 15000);
+
+    // Check for Google OAuth callback redirect parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('gmail') === 'connected') {
+      this.showToast('Google OAuth: Gmail connected successfully!', 'success', '📧');
+      window.history.replaceState({}, document.title, window.location.pathname);
+      this.gmailConnected = true;
+      this.loadGmailStatus().then(() => this.loadGmailMessages());
+      this.navigateTo('gmail-inbox');
+      return;
+    } else if (urlParams.get('gmail') === 'error') {
+      const reason = urlParams.get('reason') || 'Consent declined';
+      const rawDetails = urlParams.get('details');
+      const details = rawDetails ? decodeURIComponent(rawDetails) : '';
+      let errorMsg = `Google OAuth failed: ${reason}`;
+      if (reason === 'access_denied') {
+        errorMsg = 'Google OAuth: Access denied. Make sure your Gmail address is added under Test Users in Google Cloud Console OAuth consent screen.';
+      } else if (reason === 'missing_code') {
+        errorMsg = 'Google OAuth: Authorization code was missing from callback redirect. Please retry.';
+      } else if (reason === 'exchange_failed') {
+        errorMsg = details
+          ? `Google OAuth: Token exchange failed (${details}). Verify your OAuth client settings.`
+          : 'Google OAuth: Token exchange failed. Please verify your redirect URI in Google Cloud Console and retry.';
+      }
+      this.showToast(errorMsg, 'error', '⚠️');
+      window.history.replaceState({}, document.title, window.location.pathname);
+      this.navigateTo('gmail-inbox');
+      return;
+    }
 
     // Initial navigation
     this.navigateTo('dashboard');
@@ -120,11 +162,13 @@ class GmailGuardApp {
   renderSidebar() {
     const nav = [
       { id: 'dashboard', icon: '⬡', label: 'Dashboard' },
+      { id: 'gmail-inbox', icon: '📧', label: 'Gmail Inbox', badge: this.gmailConnected ? 'Live' : null },
       { id: 'analyze', icon: '🔍', label: 'Analyze Email' },
       { id: 'investigation', icon: '🎯', label: 'Investigation', badge: this.currentResult ? 'Active' : null },
       { id: 'infrastructure', icon: '🌍', label: 'Infrastructure & Geo' },
       { id: 'threat-intel', icon: '🌐', label: 'Threat Intel & IOCs' },
       { id: 'forensics', icon: '🔬', label: 'Forensic Evidence' },
+      { id: 'gemini-security', icon: '🤖', label: 'Gemini Security' },
       { id: 'reports', icon: '📋', label: 'Reports' },
     ];
 
@@ -137,11 +181,13 @@ class GmailGuardApp {
         </div>
       </div>
       <div class="sidebar-section">Operations</div>
-      ${nav.slice(0, 2).map(n => this._navItem(n)).join('')}
+      ${[nav[0], nav[1], nav[2]].map(n => this._navItem(n)).join('')}
       <div class="sidebar-section">Forensic Analysis</div>
-      ${nav.slice(2, 6).map(n => this._navItem(n)).join('')}
+      ${[nav[3], nav[4], nav[5], nav[6]].map(n => this._navItem(n)).join('')}
+      <div class="sidebar-section">AI Security</div>
+      ${[nav[7]].map(n => this._navItem(n)).join('')}
       <div class="sidebar-section">Intelligence</div>
-      ${nav.slice(6).map(n => this._navItem(n)).join('')}
+      ${[nav[8]].map(n => this._navItem(n)).join('')}
       <div class="sidebar-footer">
         <div class="threat-level-indicator">
           <div class="threat-level-header">🛡️ Engine Status</div>
@@ -181,11 +227,13 @@ class GmailGuardApp {
   renderTopbar() {
     const titles = {
       dashboard: ['Operations Dashboard', 'Real-Time SOC Telemetry & Session Investigations'],
+      'gmail-inbox': ['Gmail Inbox & Live Mailbox Stream', 'Official Gmail API OAuth 2.0 Integration & On-Demand Forensics'],
       analyze: ['Analyze Email', 'RFC 5322 Ingestion, File Parsing & Engine Pipeline'],
       investigation: ['Investigation / Analysis Result', 'Comprehensive Multi-Vector Threat Assessment'],
       infrastructure: ['Infrastructure & Geolocation', 'Candidate Relays, Transit Observables & Clock Skew'],
       'threat-intel': ['Threat Intelligence & IOCs', 'Domain Reputation, PhishTank Feeds & Extracted Artifacts'],
-      forensics: ['Forensic Evidence & AI Analysis', 'Authentication Verification, Static Attachments & SVM Hyperplane'],
+      forensics: ['Forensic Evidence & Correlation', 'Authentication Verification, Static Attachments & Evidence Correlation'],
+      'gemini-security': ['Gemini AI Security Intelligence', 'Contextual Intent Reasoning, Plain-Language Analysis & SOC Recommendations'],
       reports: ['Forensic Reports', 'Audit-Ready Digital Forensic Investigation Summaries']
     };
     const [title, sub] = titles[this.currentPage] || ['GmailGuard', ''];
@@ -193,7 +241,7 @@ class GmailGuardApp {
     if (!topbar) return;
 
     topbar.innerHTML = `
-      <div>
+      <div class="topbar-left">
         <div class="topbar-title">${title}</div>
         <div class="topbar-subtitle">${sub}</div>
       </div>
@@ -225,11 +273,13 @@ class GmailGuardApp {
 
     const pages = {
       dashboard: () => this.renderDashboard(),
+      'gmail-inbox': () => this.renderGmailInbox(),
       analyze: () => this.renderAnalyze(),
       investigation: () => this.renderInvestigation(),
       infrastructure: () => this.renderInfrastructure(),
       'threat-intel': () => this.renderThreatIntel(),
       forensics: () => this.renderForensics(),
+      'gemini-security': () => this.renderGeminiSecurity(),
       reports: () => this.renderReports(),
     };
 
@@ -398,6 +448,10 @@ class GmailGuardApp {
   }
 
   _initDashboardCharts(critical, high, suspicious, clean, cases) {
+    if (typeof Chart === 'undefined') {
+      console.warn('Chart.js not loaded — skipping dashboard charts.');
+      return;
+    }
     const donutEl = document.getElementById('dashboard-threat-donut');
     if (donutEl) {
       if (this.charts.donut) this.charts.donut.destroy();
@@ -453,6 +507,440 @@ class GmailGuardApp {
         }
       });
     }
+  }
+
+  _escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // ─── GMAIL INBOX INTEGRATION ───────────────────────────────
+  async renderGmailInbox() {
+    const content = document.getElementById('page-content');
+    if (!content) return;
+
+    content.innerHTML = `
+      <div class="gmail-inbox-page animate-in" style="width:100%">
+        <!-- Top Official Gmail Inbox Header Card -->
+        <div class="gmail-header-card">
+          <div class="gmail-header-left">
+            <div class="gmail-header-icon">✉️</div>
+            <div style="min-width:0">
+              <div class="gmail-header-title-row">
+                <h2 class="gmail-header-title">Official Gmail Inbox</h2>
+                <span class="badge ${this.gmailConnected ? 'badge-pass' : 'badge-unknown'}" style="font-size:9.5px;letter-spacing:0.5px">
+                  ${this.gmailConnected ? '🟢 OAUTH CONNECTED' : 'DEMO MODE'}
+                </span>
+              </div>
+              <p class="gmail-header-desc">
+                Official Google OAuth 2.0 integration &bull; Least-privilege read-only access (<code>gmail.readonly</code>) &bull; On-demand forensic &amp; AI threat analysis.
+              </p>
+            </div>
+          </div>
+          <div class="gmail-header-actions">
+            <button class="btn btn-secondary btn-sm" onclick="app.loadGmailMessages()">🔄 Sync Mailbox</button>
+            <button class="btn btn-secondary btn-sm" onclick="app.toggleOAuthHelpModal()">📋 OAuth Setup Guide</button>
+            ${this.gmailConnected ? `
+              <button class="btn btn-secondary btn-sm" style="border-color:var(--critical)40;color:var(--critical)" onclick="app.disconnectGmail()">Disconnect</button>
+            ` : ''}
+          </div>
+        </div>
+
+        <!-- Connection / Session Banner -->
+        <div id="gmail-connect-banner-container">
+          ${this._renderGmailConnectionBanner()}
+        </div>
+
+        <!-- Search & Filter Bar -->
+        <div class="gmail-filter-bar">
+          <div class="gmail-search-box">
+            <span style="color:var(--text-muted);font-size:13px">🔍</span>
+            <input type="text" id="gmail-search-input" value="${this._escapeHtml(this.activeGmailSearch)}" placeholder="Search emails by sender, subject or snippet..." oninput="app.filterGmailMessages(this.value)">
+          </div>
+          <div class="gmail-filter-group" id="gmail-filter-group">
+            <button class="gmail-filter-btn ${this.activeGmailFilter === 'all' ? 'active' : ''}" data-filter="all" onclick="app.setGmailFilter('all')">All (<span id="count-all">${this.gmailMessages.length}</span>)</button>
+            <button class="gmail-filter-btn ${this.activeGmailFilter === 'unread' ? 'active' : ''}" data-filter="unread" onclick="app.setGmailFilter('unread')">Unread (<span id="count-unread">${this.gmailMessages.filter(m => m.is_unread).length}</span>)</button>
+            <button class="gmail-filter-btn ${this.activeGmailFilter === 'attachments' ? 'active' : ''}" data-filter="attachments" onclick="app.setGmailFilter('attachments')">📎 Attachments (<span id="count-attachments">${this.gmailMessages.filter(m => m.has_attachments).length}</span>)</button>
+            <button class="gmail-filter-btn ${this.activeGmailFilter === 'analyzed' ? 'active' : ''}" data-filter="analyzed" onclick="app.setGmailFilter('analyzed')">🎯 Analyzed (<span id="count-analyzed">${this.gmailMessages.filter(m => (this.analysisState[m.id]?.status === 'completed') || m.threat_score != null).length}</span>)</button>
+            <button class="gmail-filter-btn ${this.activeGmailFilter === 'pending' ? 'active' : ''}" data-filter="pending" onclick="app.setGmailFilter('pending')">Pending (<span id="count-pending">${this.gmailMessages.filter(m => (!this.analysisState[m.id] || this.analysisState[m.id]?.status !== 'completed') && m.threat_score == null).length}</span>)</button>
+          </div>
+        </div>
+
+        <!-- Mail List Card -->
+        <div class="card" style="padding:0;overflow:hidden;border:1px solid var(--border)">
+          <div id="gmail-messages-table-container" class="gmail-table-container">
+            ${this._renderGmailMessagesTable()}
+          </div>
+        </div>
+
+        <!-- Setup Guide Modal (Hidden by Default) -->
+        <div id="gmail-oauth-modal" style="display:none;position:fixed;inset:0;background:#060b16ee;z-index:99999;align-items:center;justify-content:center;backdrop-filter:blur(6px);padding:20px">
+          <div class="card animate-in" style="width:680px;max-width:96vw;max-height:90vh;overflow-y:auto;border-color:var(--cyan)">
+            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+              <div class="card-title" style="display:flex;align-items:center;gap:8px">
+                <span>🔑</span>
+                <span>Google Cloud OAuth 2.0 Setup Guide</span>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="app.toggleOAuthHelpModal()">✕ Close</button>
+            </div>
+            <div class="card-body" style="padding:20px;font-size:13px;line-height:1.6;color:var(--text-secondary)">
+              <p style="color:var(--text-primary);margin-top:0">
+                To connect your real Gmail account to GmailGuard using official Google OAuth:
+              </p>
+              <ol style="padding-left:20px;margin-bottom:16px">
+                <li style="margin-bottom:8px">
+                  <strong style="color:var(--text-primary)">Google Cloud Console:</strong> Visit <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-cyan" style="text-decoration:none">console.cloud.google.com/apis/credentials</a> and create a Project.
+                </li>
+                <li style="margin-bottom:8px">
+                  <strong style="color:var(--text-primary)">Enable Gmail API:</strong> Under APIs &amp; Services &rarr; Enable <strong>Gmail API</strong>.
+                </li>
+                <li style="margin-bottom:8px">
+                  <strong style="color:var(--text-primary)">Configure OAuth Consent Screen:</strong> Set User Type to <em>External</em>, add your email under Test Users, and add scope <code>https://www.googleapis.com/auth/gmail.readonly</code>.
+                </li>
+                <li style="margin-bottom:8px">
+                  <strong style="color:var(--text-primary)">Create OAuth Client ID:</strong> Choose <em>Web application</em>. Set Authorized Redirect URI:
+                  <div style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--cyan);margin:6px 0;border:1px solid var(--border)">
+                    http://127.0.0.1:8000/api/gmail/oauth2callback
+                  </div>
+                </li>
+                <li style="margin-bottom:8px">
+                  <strong style="color:var(--text-primary)">Save Credentials:</strong> Download <code>client_secret.json</code> into <code>backend/</code>, or set environment variables in <code>backend/.env</code>:
+                  <div style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--cyan);margin:6px 0;border:1px solid var(--border)">
+                    GMAIL_CLIENT_ID=your_client_id.apps.googleusercontent.com<br>
+                    GMAIL_CLIENT_SECRET=your_client_secret
+                  </div>
+                </li>
+              </ol>
+              <div style="background:rgba(0,212,255,0.05);border:1px solid rgba(0,212,255,0.2);padding:12px;border-radius:var(--radius-sm);font-size:12px">
+                ℹ️ <strong>Security &amp; Privacy Assurance:</strong> GmailGuard requests <strong>read-only</strong> access. Tokens are securely handled server-side and never exposed to JavaScript. Emails are only analyzed when you explicitly click <strong>[Analyze]</strong>.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Sync status and messages on opening inbox
+    await this.loadGmailStatus();
+    if (this.gmailConnected || this.gmailMessages.length === 0) {
+      await this.loadGmailMessages();
+    }
+  }
+
+  _renderGmailConnectionBanner() {
+    if (this.gmailConnected) {
+      const analyzedCount = this.gmailMessages.filter(m => m.analyzed || m.threat_score != null || (this.analysisState[m.id]?.status === 'completed')).length;
+      return `
+        <div class="gmail-connect-banner">
+          <div style="display:flex;align-items:center;gap:12px;min-width:0;flex:1">
+            <div class="gmail-user-avatar">
+              👤
+            </div>
+            <div style="min-width:0">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <span style="font-weight:700;font-size:13.5px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  ${this.gmailUser?.email_address || 'Connected Google Account'}
+                </span>
+                <span class="badge badge-pass" style="font-size:9.5px;padding:2px 7px">ACTIVE SESSION</span>
+              </div>
+              <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                Mailbox Messages: <strong style="color:var(--cyan)">${(this.gmailUser?.messages_total || this.gmailMessages.length).toLocaleString()}</strong> &bull;
+                Analyzed in Session: <strong style="color:#34d399">${analyzedCount}</strong> &bull;
+                Scope: <code style="color:var(--text-secondary)">gmail.readonly</code>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0">
+            <button class="btn btn-secondary btn-sm" onclick="app.loadGmailMessages()">🔄 Refresh Mailbox</button>
+            <button class="btn btn-secondary btn-sm" style="color:var(--critical);border-color:var(--critical)40" onclick="app.disconnectGmail()">Disconnect</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="gmail-connect-banner" style="background:rgba(13, 21, 39, 0.95);border:1px solid var(--border)">
+        <div style="min-width:0;flex:1">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+            <span style="font-size:18px">🔐</span>
+            <strong style="font-size:14px;color:var(--text-primary)">Connect Your Real Google Account</strong>
+            <span class="badge" style="background:#1a73e820;color:#60a5fa;border:1px solid #1a73e850;font-size:10px">OAuth 2.0 Official</span>
+          </div>
+          <div style="font-size:11.5px;color:var(--text-secondary);max-width:720px;line-height:1.4">
+            Authenticate directly with Google to retrieve and inspect your live inbox. GmailGuard requests read-only access (<code>gmail.readonly</code>). Emails are only analyzed on demand.
+          </div>
+        </div>
+        <div style="flex-shrink:0">
+          <button class="gmail-google-btn" onclick="app.connectGmail()">
+            <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.79l7.97-6.2z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+            <span>Connect with Google</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  _getSenderAvatar(name = '', email = '') {
+    const s = ((name || '') + ' ' + (email || '')).toLowerCase();
+    if (s.includes('canara') || s.includes('bank') || s.includes('hdfc') || s.includes('sbi') || s.includes('icici')) {
+      return `<div class="brand-avatar" style="background:#1e3a5f;color:#60a5fa" title="Banking Alert">🏛️</div>`;
+    }
+    if (s.includes('mind tree') || s.includes('talent') || s.includes('hiring') || s.includes('recruit')) {
+      return `<div class="brand-avatar" style="background:#1e40af;color:#93c5fd" title="Recruitment / HR">👥</div>`;
+    }
+    if (s.includes('zomato') || s.includes('swiggy') || s.includes('food') || s.includes('order')) {
+      return `<div class="brand-avatar" style="background:#dc2626;color:#ffffff;font-weight:800;font-size:12px" title="Zomato">Z</div>`;
+    }
+    if (s.includes('acm') || s.includes('technews') || s.includes('ieee')) {
+      return `<div class="brand-avatar" style="background:#0284c7;color:#ffffff;font-size:10px;font-weight:800;letter-spacing:-0.5px" title="ACM">ACM</div>`;
+    }
+    if (s.includes('docker')) {
+      return `<div class="brand-avatar" style="background:#0284c7;color:#ffffff" title="Docker">🐳</div>`;
+    }
+    if (s.includes('google') || s.includes('gmail')) {
+      return `<div class="brand-avatar" style="background:#ffffff;color:#4285f4;font-weight:900;font-size:13px;border:1px solid #e2e8f0" title="Google"><span style="color:#4285f4">G</span></div>`;
+    }
+    if (s.includes('github') || s.includes('gitlab')) {
+      return `<div class="brand-avatar" style="background:#24292f;color:#ffffff" title="GitHub">🐙</div>`;
+    }
+    if (s.includes('microsoft') || s.includes('office') || s.includes('azure')) {
+      return `<div class="brand-avatar" style="background:#0078d4;color:#ffffff" title="Microsoft">🪟</div>`;
+    }
+    if (s.includes('amazon') || s.includes('aws')) {
+      return `<div class="brand-avatar" style="background:#ff9900;color:#111827;font-weight:800" title="Amazon">📦</div>`;
+    }
+    // Default: Clean initial letter
+    const initial = ((name || email || 'M').trim()[0] || 'M').toUpperCase();
+    const hues = [200, 260, 160, 320, 220, 280];
+    const charCode = (name || email || 'M').charCodeAt(0) || 65;
+    const hue = hues[charCode % hues.length];
+    return `<div class="brand-avatar" style="background:hsl(${hue},60%,20%);color:hsl(${hue},80%,70%);border:1px solid hsl(${hue},60%,35%)">${initial}</div>`;
+  }
+
+  _formatGmailDate(rawDate) {
+    if (!rawDate) return '<span style="color:var(--text-muted)">Today</span>';
+    const parts = String(rawDate).trim().split(/\s+/);
+    if (parts.length >= 5) {
+      const dayName = parts[0];
+      const day = parts[1];
+      const month = parts[2];
+      const year = parts[3];
+      const time = parts[4];
+      const tz = parts.slice(5).join(' ');
+      return `<div>${dayName} ${day} ${month} ${year}</div><div style="font-size:10px;color:var(--text-muted);margin-top:1px">${time} ${tz}</div>`;
+    }
+    return `<div>${this._escapeHtml(rawDate)}</div>`;
+  }
+
+  getPaginatedGmailMessages() {
+    const allFiltered = this.getFilteredGmailMessages();
+    const totalItems = allFiltered.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / this.gmailPageSize));
+    const currentPage = Math.min(Math.max(1, this.gmailCurrentPage), totalPages);
+    this.gmailCurrentPage = currentPage;
+    const startIdx = (currentPage - 1) * this.gmailPageSize;
+    const items = allFiltered.slice(startIdx, startIdx + this.gmailPageSize);
+    return {
+      items,
+      totalItems,
+      totalPages,
+      currentPage,
+      startIdx
+    };
+  }
+
+  setGmailPage(page) {
+    this.gmailCurrentPage = page;
+    this.renderCurrentGmailMessagesView();
+  }
+
+  _renderGmailMessagesTable(messagesList = null) {
+    const paginated = messagesList ? {
+      items: messagesList.slice(0, this.gmailPageSize),
+      totalItems: messagesList.length,
+      totalPages: Math.max(1, Math.ceil(messagesList.length / this.gmailPageSize)),
+      currentPage: 1,
+      startIdx: 0
+    } : this.getPaginatedGmailMessages();
+
+    const { items, totalItems, totalPages, currentPage, startIdx } = paginated;
+
+    if (!items || items.length === 0) {
+      return `
+        <div style="text-align:center;padding:50px 20px;color:var(--text-muted)">
+          <div style="font-size:36px;margin-bottom:12px">📭</div>
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:6px">No Emails Found</div>
+          <div style="font-size:12px">No messages matched your current search or filter criteria. Click "Refresh Mailbox" to check for new mail.</div>
+        </div>
+      `;
+    }
+
+    let pageBtnsHtml = '';
+    for (let p = 1; p <= totalPages; p++) {
+      pageBtnsHtml += `
+        <button class="gmail-page-btn ${p === currentPage ? 'active' : ''}" onclick="app.setGmailPage(${p})">${p}</button>
+      `;
+    }
+
+    return `
+      <table class="gmail-table">
+        <colgroup>
+          <col class="gmail-col-sender">
+          <col class="gmail-col-subject">
+          <col class="gmail-col-date">
+          <col class="gmail-col-signals">
+          <col class="gmail-col-score">
+          <col class="gmail-col-verdict">
+          <col class="gmail-col-action">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Sender</th>
+            <th>Subject &amp; Snippet</th>
+            <th>Date / Time</th>
+            <th>Signals</th>
+            <th style="text-align:center">Forensic Score</th>
+            <th style="text-align:center">AI Verdict</th>
+            <th style="text-align:right">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(m => this._renderGmailRowHtml(m)).join('')}
+        </tbody>
+      </table>
+
+      <!-- Pagination Footer -->
+      <div class="gmail-pagination-bar">
+        <div class="gmail-pagination-info">
+          Showing ${totalItems === 0 ? 0 : startIdx + 1}&ndash;${Math.min(startIdx + this.gmailPageSize, totalItems)} of ${totalItems} emails
+        </div>
+        <div class="gmail-pagination-controls">
+          <button class="gmail-page-btn" ${currentPage <= 1 ? 'disabled' : ''} onclick="app.setGmailPage(${currentPage - 1})" title="Previous Page">&lt;</button>
+          ${pageBtnsHtml}
+          <button class="gmail-page-btn" ${currentPage >= totalPages ? 'disabled' : ''} onclick="app.setGmailPage(${currentPage + 1})" title="Next Page">&gt;</button>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderGmailRowHtml(m) {
+    const state = this.analysisState[m.id] || {};
+    const status = state.status || (m.threat_score != null || m.analysis_status === 'ANALYZED' ? 'completed' : 'idle');
+    const isAnalyzing = status === 'analyzing';
+    const isCompleted = status === 'completed' || m.threat_score != null || m.analyzed;
+    const isError = status === 'error';
+
+    const threatScore = state.threatScore != null ? state.threatScore : m.threat_score;
+    const threatVerdict = state.verdict || m.threat_verdict || (threatScore != null ? (threatScore >= 70 ? 'HIGH_RISK' : threatScore >= 40 ? 'MEDIUM_RISK' : 'LOW_RISK') : null);
+
+    let scoreColor = '#34d399';
+    let scoreBg = 'rgba(52, 211, 153, 0.12)';
+    let scoreBorder = 'rgba(52, 211, 153, 0.4)';
+    if ((threatScore || 0) >= 70) {
+      scoreColor = '#ff2d55';
+      scoreBg = 'rgba(255, 45, 85, 0.15)';
+      scoreBorder = 'rgba(255, 45, 85, 0.4)';
+    } else if ((threatScore || 0) >= 40) {
+      scoreColor = '#ff6b35';
+      scoreBg = 'rgba(255, 107, 53, 0.12)';
+      scoreBorder = 'rgba(255, 107, 53, 0.4)';
+    }
+
+    let verdictColor = '#34d399';
+    let verdictBg = 'rgba(52, 211, 153, 0.12)';
+    let verdictBorder = 'rgba(52, 211, 153, 0.4)';
+    if (threatVerdict === 'CRITICAL' || threatVerdict === 'HIGH_RISK' || threatVerdict === 'SUSPICIOUS') {
+      verdictColor = '#ff2d55';
+      verdictBg = 'rgba(255, 45, 85, 0.15)';
+      verdictBorder = 'rgba(255, 45, 85, 0.4)';
+    } else if (threatVerdict === 'MEDIUM_RISK' || threatVerdict === 'CAUTION') {
+      verdictColor = '#ff6b35';
+      verdictBg = 'rgba(255, 107, 53, 0.12)';
+      verdictBorder = 'rgba(255, 107, 53, 0.4)';
+    }
+
+    return `
+      <tr class="gmail-row ${m.is_unread ? 'unread' : ''}" id="gmail-row-${m.id}">
+        <td style="overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            ${this._getSenderAvatar(m.sender_name, m.sender_email)}
+            <div style="min-width:0;flex:1;overflow:hidden">
+              <div style="font-weight:700;color:var(--text-primary);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${this._escapeHtml(m.sender_name || m.sender_email)}">
+                ${this._escapeHtml(m.sender_name || m.sender_email)}
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${this._escapeHtml(m.sender_email)}">
+                ${this._escapeHtml(m.sender_email)}
+              </div>
+            </div>
+          </div>
+        </td>
+        <td style="overflow:hidden">
+          <div style="font-weight:600;color:var(--text-primary);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px" title="${this._escapeHtml(m.subject || '(No Subject)')}">
+            ${this._escapeHtml(m.subject || '(No Subject)')}
+          </div>
+          <div style="font-size:11.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${this._escapeHtml(m.snippet || '')}">
+            "${this._escapeHtml(m.snippet || '')}"
+          </div>
+        </td>
+        <td style="font-size:11px;color:var(--text-secondary);font-family:'JetBrains Mono',monospace;line-height:1.35;overflow:hidden">
+          ${this._formatGmailDate(m.date)}
+        </td>
+        <td style="overflow:hidden">
+          <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+            ${m.has_urls ? '<span class="gmail-indicator-tag" title="Contains Links">🔗 URL</span>' : ''}
+            ${m.has_attachments ? '<span class="gmail-indicator-tag" title="Contains Attachment">📎 File</span>' : ''}
+            ${!m.has_urls && !m.has_attachments ? '<span style="color:var(--text-muted);font-size:11px">—</span>' : ''}
+          </div>
+        </td>
+        <td style="text-align:center;overflow:hidden">
+          ${isAnalyzing ? `
+            <span style="color:var(--cyan);font-size:11px;font-weight:600">Scanning...</span>
+          ` : isCompleted && threatScore != null ? `
+            <span class="badge" style="background:${scoreBg};color:${scoreColor};border:1px solid ${scoreBorder};font-weight:700;font-family:'JetBrains Mono',monospace;font-size:11px;padding:3px 8px;display:inline-block">
+              ${threatScore}/100
+            </span>
+          ` : isError ? `
+            <span class="badge" style="background:var(--critical)20;color:var(--critical);border:1px solid var(--critical)60;font-size:10px" title="${this._escapeHtml(state.error || 'Failed')}">FAILED</span>
+          ` : `
+            <span class="badge badge-unknown" style="font-size:10px">NOT ANALYZED</span>
+          `}
+        </td>
+        <td style="text-align:center;overflow:hidden">
+          ${isCompleted && threatVerdict ? `
+            <span class="badge" style="background:${verdictBg};color:${verdictColor};border:1px solid ${verdictBorder};font-size:10.5px;font-weight:700;padding:3px 8px;display:inline-block">
+              ${threatVerdict}
+            </span>
+          ` : isError ? `
+            <span style="font-size:11px;color:var(--critical)">Error</span>
+          ` : `
+            <span style="font-size:11px;color:var(--text-muted)">—</span>
+          `}
+        </td>
+        <td style="text-align:right;white-space:nowrap;overflow:hidden">
+          ${isAnalyzing ? `
+            <button class="btn btn-secondary btn-sm gmail-action-btn scanning" disabled>
+              <span class="pulse-dot" style="--pulse-color:var(--cyan);width:6px;height:6px;display:inline-block;margin-right:6px"></span>Scanning...
+            </button>
+          ` : isCompleted ? `
+            <div style="display:inline-flex;gap:4px;align-items:center;justify-content:flex-end">
+              <button class="btn btn-primary btn-sm gmail-action-btn view-btn" onclick="app.viewGmailAnalysis('${m.id}')">
+                View <span style="font-size:9px;margin-left:3px">▼</span>
+              </button>
+              <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="app.analyzeGmailMessage('${m.id}', true)" title="Re-run forensic pipeline">🔄</button>
+            </div>
+          ` : isError ? `
+            <button class="btn btn-secondary btn-sm gmail-action-btn retry-btn" onclick="app.analyzeGmailMessage('${m.id}', true)">⚠️ Retry</button>
+          ` : `
+            <button class="btn btn-primary btn-sm gmail-action-btn" onclick="app.analyzeGmailMessage('${m.id}', false)">⚡ Analyze</button>
+          `}
+        </td>
+      </tr>
+    `;
   }
 
   // ─── B. ANALYZE EMAIL ──────────────────────────────────────
@@ -908,19 +1396,45 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
             </div>
           </div>
 
-          <!-- Sub-scores breakdown -->
-          ${r.subScores ? `
+          <!-- Explainable Threat Score Breakdown -->
           <div class="card animate-in animate-in-delay-2">
-            <div class="card-header"><div class="card-title">📊 Multi-Vector Sub-Scores</div></div>
-            <div class="card-body" style="padding:12px 16px">
-              ${Object.entries(r.subScores).map(([k, v]) => `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-                  <span style="font-size:11px;color:var(--text-secondary);text-transform:capitalize">${k.replace(/_/g, ' ')}</span>
-                  <span class="font-mono" style="font-size:12px;font-weight:600;color:${v >= 20 ? 'var(--critical)' : v >= 10 ? 'var(--medium)' : 'var(--low)'}">+${v}</span>
-                </div>
-              `).join('')}
+            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+              <div class="card-title">📊 Threat Score Breakdown</div>
+              <span class="badge ${r.threatScore >= 70 ? 'badge-critical' : r.threatScore >= 40 ? 'badge-high' : 'badge-pass'} font-mono">${r.threatScore}/100</span>
             </div>
-          </div>` : ''}
+            <div class="card-body" style="padding:12px 14px">
+              ${r.scoreBreakdown && r.scoreBreakdown.components ? `
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  ${r.scoreBreakdown.components.map(c => `
+                    <div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+                      <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span style="font-size:11px;font-weight:600;color:var(--text-primary)">${c.name}</span>
+                        <span class="font-mono" style="font-size:11px;font-weight:700;color:${c.contribution > 0 ? (c.contribution >= 15 ? 'var(--critical)' : 'var(--high)') : 'var(--low)'}">
+                          ${c.contribution > 0 ? `+${c.contribution}` : '+0'}
+                        </span>
+                      </div>
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">
+                        <span style="font-size:10px;color:var(--text-muted);max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${c.reason}">${c.reason}</span>
+                        <span style="font-size:10px;color:var(--text-muted);font-family:monospace">${c.sub_score}/100</span>
+                      </div>
+                    </div>
+                  `).join('')}
+                  <div style="display:flex;justify-content:space-between;align-items:center;padding-top:6px;font-size:11px;color:var(--text-muted)">
+                    <span>Base: <strong style="color:var(--text-primary)">${r.scoreBreakdown.base_score}</strong></span>
+                    <span>URL Boost: <strong style="color:var(--text-primary)">+${r.scoreBreakdown.url_boost}</strong></span>
+                    <span>Att Boost: <strong style="color:var(--text-primary)">+${r.scoreBreakdown.attachment_boost}</strong></span>
+                  </div>
+                </div>
+              ` : (r.subScores ? `
+                ${Object.entries(r.subScores).map(([k, v]) => `
+                  <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+                    <span style="font-size:11px;color:var(--text-secondary);text-transform:capitalize">${k.replace(/_/g, ' ')}</span>
+                    <span class="font-mono" style="font-size:12px;font-weight:600;color:${v >= 50 ? 'var(--critical)' : v >= 25 ? 'var(--medium)' : 'var(--low)'}">${v}/100</span>
+                  </div>
+                `).join('')}
+              ` : '')}
+            </div>
+          </div>
         </div>
 
         <!-- Right Main Panel -->
@@ -928,6 +1442,7 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
           <!-- Navigation Sub-Tabs -->
           <div class="results-tabs">
             <div class="result-tab active" data-tab="overview" onclick="app.switchInvestigationTab('overview')">📊 Overview & Why?</div>
+            <div class="result-tab" data-tab="gemini" onclick="app.switchInvestigationTab('gemini')">🤖 Gemini Security</div>
             <div class="result-tab" data-tab="relays" onclick="app.switchInvestigationTab('relays')">🎯 Relays & Skew</div>
             <div class="result-tab" data-tab="network" onclick="app.switchInvestigationTab('network')">🌍 Network & Geo</div>
             <div class="result-tab" data-tab="urls" onclick="app.switchInvestigationTab('urls')">🔗 URLs & Domains</div>
@@ -947,6 +1462,9 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
                 <div class="scope-disclaimer-text">${r.forensicScope}</div>
               </div>
             </div>
+
+            <!-- Gemini Plain-Language Executive Finding Callout -->
+            ${this._renderGeminiOverviewCallout(r)}
 
             <!-- "Why was this email classified this way?" Card -->
             <div class="card mb-16" style="border-left:4px solid ${scoreColor}">
@@ -1036,6 +1554,28 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
                 </div>
               </div>
             </div>
+
+            <!-- Sender Domain Intelligence (Envelope From Domain) -->
+            ${r.domain ? `
+            <div class="card mb-16">
+              <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+                <div class="card-title">🔍 Sender Email Domain Intelligence (${r.domain?.domain || r.email?.senderDomain || 'N/A'})</div>
+                <span class="badge badge-outline" style="border-color:var(--cyan);color:var(--cyan);font-size:10px">Email Transport Envelope Domain</span>
+              </div>
+              <div class="card-body">
+                <div class="grid-2">
+                  <div class="info-card"><div class="info-label">Sender Domain Name</div><div class="info-value font-mono">${r.domain?.domain}</div></div>
+                  <div class="info-card"><div class="info-label">Domain Age</div><div class="info-value">${r.domain?.ageDays != null ? r.domain.ageDays + ' days' : 'Not available'} ${r.domain?.ageDays != null && r.domain.ageDays < 30 ? '<span class="badge badge-fail" style="margin-left:6px">Newly Registered</span>' : ''}</div></div>
+                  <div class="info-card"><div class="info-label">Registrar</div><div class="info-value">${r.domain?.registrar || 'Unknown'}</div></div>
+                  <div class="info-card"><div class="info-label">Typosquatting Check</div><div class="info-value">${r.domain?.isTyposquat ? '<span class="badge badge-fail">TYPOSQUAT TARGET: ' + r.domain.typosquatTarget + '</span>' : 'None detected'}</div></div>
+                </div>
+              </div>
+            </div>` : ''}
+          </div>
+
+          <!-- TAB: GEMINI SECURITY -->
+          <div class="tab-panel" id="inv-tab-gemini">
+            ${this._renderActiveEmailGeminiReport(r)}
           </div>
 
           <!-- TAB 2: RELAYS & SKEW -->
@@ -1222,13 +1762,13 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
               <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
                 <div class="card-title">🔗 Extracted URLs & Threat Intelligence (${r.urls?.length || 0})</div>
                 <div style="display:flex;gap:8px;align-items:center">
-                  <span class="badge badge-outline" style="border-color:var(--cyan);color:var(--cyan);font-size:10px">🛡️ urlscan.io Cloud Sandbox</span>
-                  <span class="badge badge-outline" style="border-color:var(--border-color);color:var(--text-muted);font-size:10px">Zero Local Execution</span>
+                  <span class="badge badge-outline" style="border-color:var(--cyan);color:var(--cyan);font-size:10px">🛡️ Local Browserless Sandbox (Chromium Docker)</span>
+                  <span class="badge badge-outline" style="border-color:var(--border-color);color:var(--text-muted);font-size:10px">Ephemeral Container Isolation</span>
                 </div>
               </div>
               <div class="card-body">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
-                  ℹ️ Security Policy: URLs are handled as immutable forensic data, not clickable hyperlinks.
+                  ℹ️ Security Policy: URLs are handled as immutable forensic data, dynamically evaluated inside an isolated local Browserless Chromium container with strict SSRF controls.
                 </div>
                 ${(r.urls && r.urls.length > 0) ? `
                   <div style="display:flex;flex-direction:column;gap:12px">
@@ -1238,14 +1778,16 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
                           <span>${(u.sandbox && u.sandbox.is_malicious) || u.isPhishTankVerified || u.isIpUrl ? '🔴' : (u.sandbox && u.sandbox.verdict === 'SUSPICIOUS') ? '🟠' : '🟡'}</span>
                           <span class="url-text font-mono" style="font-weight:600">${u.url}</span>
                           ${u.sandbox ? `
-                            <span class="badge" style="background:#132035;color:var(--text-muted);font-size:9px">MODE: ${u.sandbox.mode || 'LIVE'}</span>
-                            ${u.sandbox.status === 'ERROR' || u.sandbox.status === 'TIMEOUT' ? `
-                              <span class="badge badge-high" style="font-size:10px">⚠️ urlscan.io: ${u.sandbox.status} (${u.sandbox.error || 'Failed'})</span>
+                            <span class="badge" style="background:#132035;color:var(--text-muted);font-size:9px">SANDBOX: ${u.sandbox.status || 'COMPLETED'}</span>
+                            ${u.sandbox.status === 'ERROR' || u.sandbox.status === 'TIMEOUT' || u.sandbox.status === 'FAILED' ? `
+                              <span class="badge badge-high" style="font-size:10px">⚠️ Sandbox: ${u.sandbox.status} (${u.sandbox.error || 'Failed'})</span>
+                            ` : u.sandbox.status === 'BLOCKED' ? `
+                              <span class="badge badge-critical" style="font-size:10px">🛡️ SSRF Blocked</span>
                             ` : u.sandbox.content_category === 'ADULT_CONTENT' || (u.sandbox.behavior_indicators && u.sandbox.behavior_indicators.includes('ADULT_CONTENT_DETECTED')) ? `
                               <span class="badge badge-high" style="font-size:10px">⚠️ Adult Content Detected</span>
                             ` : `
                               <span class="badge badge-${u.sandbox.verdict === 'MALICIOUS' ? 'critical' : u.sandbox.verdict === 'SUSPICIOUS' ? 'high' : u.sandbox.verdict === 'CLEAN' ? 'low' : 'medium'}" style="font-size:10px">
-                                🛡️ urlscan.io: ${u.sandbox.verdict} (${u.sandbox.malicious_score}/100)
+                                🛡️ Browser Sandbox: ${u.sandbox.verdict} (${u.sandbox.malicious_score}/100)
                               </span>
                             `}
                           ` : ''}
@@ -1254,36 +1796,85 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
                           <span class="badge badge-${u.riskScore >= 50 ? 'critical' : u.riskScore >= 25 ? 'high' : 'low'}">Risk: ${u.riskScore}</span>
                         </div>
 
-                        ${u.sandbox ? `
-                          <div style="font-size:11px;color:var(--text-secondary);background:rgba(0,0,0,0.25);padding:8px 10px;border-radius:4px;display:flex;flex-direction:column;gap:4px">
-                            ${u.sandbox.effective_url && u.sandbox.effective_url.replace(/\\/$/, '').toLowerCase() !== u.url.replace(/\\/$/, '').toLowerCase() ? `
-                              <div style="color:var(--amber)"><strong style="color:var(--amber)">↪ Dynamic Redirect:</strong> unmasked to <span class="font-mono">${u.sandbox.effective_url}</span></div>
-                            ` : ''}
-                            <div style="display:flex;gap:14px;flex-wrap:wrap;color:var(--text-muted)">
-                              <div><strong>Server:</strong> ${u.sandbox.page_info?.server || 'N/A'} (HTTP ${u.sandbox.page_info?.status_code || '200'})</div>
-                              <div><strong>Resolved IP:</strong> ${u.sandbox.page_info?.ip || 'N/A'}</div>
-                              <div><strong>Contacted Domains:</strong> ${(u.sandbox.contacted_domains || []).slice(0, 3).join(', ') || 'N/A'}</div>
+                        ${u.sandbox ? (() => {
+                          const stripSlash = (s) => s && s.endsWith('/') ? s.slice(0, -1) : (s || '');
+                          const isRedirect = u.sandbox.effective_url && stripSlash(u.sandbox.effective_url).toLowerCase() !== stripSlash(u.url).toLowerCase();
+                          return `
+                          <div style="font-size:11px;color:var(--text-secondary);background:rgba(0,0,0,0.3);padding:10px 12px;border-radius:6px;border:1px solid rgba(0,212,255,0.12);display:flex;flex-direction:column;gap:6px">
+                            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:6px">
+                              <span style="color:var(--cyan);font-weight:600">🌐 Browserless Telemetry & Observable Behavior</span>
+                              <span style="font-size:10px;color:var(--text-muted)">Mode: <strong>${u.sandbox.mode || 'LIVE'}</strong> | Status: <strong>${u.sandbox.status}</strong></span>
                             </div>
+
+                            ${isRedirect ? `
+                              <div style="color:var(--amber);background:rgba(245,158,11,0.08);padding:6px 8px;border-radius:4px">
+                                <strong>↪ Final Effective URL:</strong> <span class="font-mono" style="word-break:break-all">${u.sandbox.effective_url}</span>
+                                ${u.sandbox.redirects && u.sandbox.redirects.length > 0 ? `
+                                  <div style="font-size:10px;color:var(--text-muted);margin-top:3px">
+                                    Chain: ${u.sandbox.redirects.map(r => `${r.from} ➔ ${r.to}`).join(' | ')}
+                                  </div>
+                                ` : ''}
+                              </div>
+                            ` : `
+                              <div><strong>Effective URL:</strong> <span class="font-mono" style="word-break:break-all">${u.sandbox.effective_url || u.url}</span></div>
+                            `}
+
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:8px;background:rgba(255,255,255,0.02);padding:6px 8px;border-radius:4px">
+                              <div><strong>Server:</strong> ${u.sandbox.page_info?.server || 'Unknown'} (HTTP ${u.sandbox.page_info?.status_code || '200'})</div>
+                              <div><strong>Resolved IP:</strong> ${u.sandbox.page_info?.ip || 'N/A'}</div>
+                              <div><strong>Contacted Domains:</strong> ${(u.sandbox.contacted_domains || []).slice(0, 4).join(', ') || 'N/A'}</div>
+                              <div><strong>Contacted IPs:</strong> ${(u.sandbox.contacted_ips || []).slice(0, 4).join(', ') || 'N/A'}</div>
+                              ${u.sandbox.network_requests ? `<div><strong>Network Events:</strong> ${u.sandbox.network_requests.length} requests captured</div>` : ''}
+                            </div>
+
                             ${u.sandbox.downloads && u.sandbox.downloads.length > 0 ? `
-                              <div style="color:var(--red);font-weight:600">
-                                ⚠️ Intercepted Payload Download: ${u.sandbox.downloads.map(d => `${d.filename} (${d.mime_type})`).join(', ')}
+                              <div style="color:var(--red);background:rgba(239,68,68,0.1);padding:6px 8px;border-radius:4px;font-weight:600">
+                                ⚠️ Intercepted Payload Download (Quarantined): ${u.sandbox.downloads.map(d => `${d.filename} (${d.mime_type || 'binary'})`).join(', ')}
                               </div>
                             ` : ''}
+
+                            ${(u.sandbox.console_errors && u.sandbox.console_errors.length > 0) || (u.sandbox.page_errors && u.sandbox.page_errors.length > 0) ? `
+                              <div style="color:var(--amber);background:rgba(245,158,11,0.06);padding:6px 8px;border-radius:4px;font-size:10px">
+                                <strong>⚠️ Page / Console Errors (${(u.sandbox.console_errors?.length || 0) + (u.sandbox.page_errors?.length || 0)}):</strong>
+                                <ul style="margin:2px 0 0 16px;padding:0">
+                                  ${(u.sandbox.console_errors || []).slice(0, 3).map(e => `<li>${e}</li>`).join('')}
+                                  ${(u.sandbox.page_errors || []).slice(0, 2).map(e => `<li>${e}</li>`).join('')}
+                                </ul>
+                              </div>
+                            ` : ''}
+
                             ${u.sandbox.behavior_indicators && u.sandbox.behavior_indicators.length > 0 ? `
-                              <div style="color:var(--text-secondary);font-size:10px">
-                                <strong>Behavior Indicators:</strong> ${u.sandbox.behavior_indicators.join(' • ')}
+                              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                                <span style="font-size:10px;color:var(--text-muted)"><strong>Behavior Findings:</strong></span>
+                                ${u.sandbox.behavior_indicators.map(ind => `
+                                  <span class="badge" style="background:#172554;color:#93c5fd;font-size:9px">${ind}</span>
+                                `).join('')}
                               </div>
                             ` : ''}
+
+                            ${u.sandbox.reasons && u.sandbox.reasons.length > 0 ? `
+                              <div style="font-size:10px;color:var(--text-muted)">
+                                <strong>Notes:</strong> ${u.sandbox.reasons.join(' • ')}
+                              </div>
+                            ` : ''}
+
                             ${u.sandbox.screenshot_url ? `
-                              <div style="margin-top:2px">
-                                <a href="${u.sandbox.screenshot_url}" target="_blank" rel="noopener noreferrer" style="color:var(--cyan);text-decoration:none;font-size:11px">
-                                  📸 View Sandbox Screenshot ↗
-                                </a>
-                                ${u.sandbox.result_url ? ` &bull; <a href="${u.sandbox.result_url}" target="_blank" rel="noopener noreferrer" style="color:var(--text-muted);text-decoration:none">Full urlscan.io Report ↗</a>` : ''}
+                              <div style="margin-top:6px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                                  <span style="font-weight:600;color:var(--cyan)">📸 Live Isolated Browser Screenshot:</span>
+                                  <a href="${u.sandbox.screenshot_url}" target="_blank" rel="noopener noreferrer" style="color:var(--cyan);text-decoration:none;font-size:11px">
+                                    Open Fullscreen ↗
+                                  </a>
+                                </div>
+                                <div style="border-radius:6px;overflow:hidden;border:1px solid rgba(0,212,255,0.25);background:#020617;max-width:480px">
+                                  <a href="${u.sandbox.screenshot_url}" target="_blank" rel="noopener noreferrer">
+                                    <img src="${u.sandbox.screenshot_url}" alt="Sandbox Screenshot for ${u.url}" style="width:100%;max-height:240px;object-fit:cover;object-position:top;display:block" />
+                                  </a>
+                                </div>
                               </div>
                             ` : ''}
                           </div>
-                        ` : ''}
+                        `;})() : ''}
                       </div>
                     `).join('')}
                   </div>
@@ -1291,17 +1882,56 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
               </div>
             </div>
 
-            <!-- Domain Intelligence -->
+
+            <!-- Forensic Domain Attribution & Separation -->
             <div class="card">
-              <div class="card-header">
-                <div class="card-title">🔍 Sender Domain Intelligence</div>
+              <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+                <div class="card-title">🔍 Forensic Domain Attribution & Disambiguation</div>
+                <span class="badge badge-outline" style="border-color:var(--cyan);color:var(--cyan);font-size:10px">RFC Domain Isolation</span>
               </div>
               <div class="card-body">
-                <div class="grid-2">
-                  <div class="info-card"><div class="info-label">Domain Name</div><div class="info-value">${r.domain?.domain}</div></div>
-                  <div class="info-card"><div class="info-label">Domain Age</div><div class="info-value">${r.domain?.ageDays != null ? r.domain.ageDays + ' days' : 'Not available'} ${r.domain?.ageDays != null && r.domain.ageDays < 30 ? '<span class="badge badge-fail" style="margin-left:6px">Newly Registered</span>' : ''}</div></div>
-                  <div class="info-card"><div class="info-label">Registrar</div><div class="info-value">${r.domain?.registrar}</div></div>
-                  <div class="info-card"><div class="info-label">Typosquatting Check</div><div class="info-value">${r.domain?.isTyposquat ? '<span class="badge badge-fail">TYPOSQUAT TARGET: ' + r.domain.typosquatTarget + '</span>' : 'None detected'}</div></div>
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">
+                  ℹ️ <strong>Forensic Principle:</strong> Sender email transport domain, body URL target domains, and sandbox contacted domains operate across distinct security boundaries and are evaluated independently.
+                </div>
+                <div class="grid-2" style="gap:12px">
+                  <div class="info-card" style="border-left:3px solid var(--cyan)">
+                    <div class="info-label">📧 Sender Envelope Domain (Transport)</div>
+                    <div class="info-value font-mono">${r.email?.senderDomain || r.domain?.domain || 'N/A'}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Originating envelope from address</div>
+                  </div>
+                  <div class="info-card" style="border-left:3px solid var(--medium)">
+                    <div class="info-label">🔗 Body URL Target Domain(s) (Payload)</div>
+                    <div class="info-value font-mono">${(r.urls && r.urls.length > 0) ? [...new Set(r.urls.map(u => u.domain).filter(Boolean))].join(', ') : 'None'}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Target domains extracted from message body</div>
+                  </div>
+                  <div class="info-card" style="border-left:3px solid #8b5cf6">
+                    <div class="info-label">↪ Final Effective Destination(s)</div>
+                    <div class="info-value font-mono">
+                      ${(r.urls && r.urls.length > 0) ? [...new Set(r.urls.map(u => {
+                        if (u.sandbox && u.sandbox.effective_url) {
+                          try { return new URL(u.sandbox.effective_url).hostname; } catch(e) { return u.sandbox.effective_url; }
+                        }
+                        return u.domain || 'N/A';
+                      }))].join(', ') : 'None'}
+                    </div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Landing domain after Browserless dynamic execution</div>
+                  </div>
+                  <div class="info-card" style="border-left:3px solid #06b6d4">
+                    <div class="info-label">🌐 Contacted Infrastructure Domains</div>
+                    <div class="info-value font-mono" style="font-size:11px">
+                      ${(() => {
+                        const allContacted = [];
+                        (r.urls || []).forEach(u => {
+                          if (u.sandbox && Array.isArray(u.sandbox.contacted_domains)) {
+                            allContacted.push(...u.sandbox.contacted_domains);
+                          }
+                        });
+                        const unique = [...new Set(allContacted)];
+                        return unique.length > 0 ? (unique.slice(0, 5).join(', ') + (unique.length > 5 ? ` (+${unique.length - 5} more)` : '')) : 'None';
+                      })()}
+                    </div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Domains contacted for scripts, APIs, CDNs during rendering</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1546,6 +2176,9 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
 
           <!-- TAB 6: AI CONTENT ANALYSIS -->
           <div class="tab-panel" id="inv-tab-ai">
+            <!-- Google Gemini AI Contextual Threat Reasoning -->
+            ${this._renderGeminiAnalysis(r.geminiAnalysis)}
+
             <!-- Linear SVM Phishing Decision Meter -->
             <div class="ml-decision-container mb-16">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -1683,6 +2316,222 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
       .replace(/^([A-Za-z0-9\-]+):/gm, '<span style="color:var(--cyan);font-weight:600">$1:</span>');
   }
 
+  _renderGeminiAnalysis(gemini) {
+    if (!gemini || !gemini.available) {
+      const reason = gemini?.reason || 'GEMINI_API_KEY is not configured in backend/.env.';
+      return `
+        <div class="card mb-16" style="border: 1px solid rgba(0, 212, 255, 0.25); background: linear-gradient(135deg, rgba(13, 21, 39, 0.9) 0%, rgba(10, 25, 47, 0.8) 100%);">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:20px">✨</span>
+              <div>
+                <div class="card-title" style="font-size:15px;color:var(--cyan);font-weight:700">Google Gemini AI Threat Reasoning</div>
+                <div style="font-size:11px;color:var(--text-muted)">Contextual Large Language Model Security Intelligence</div>
+              </div>
+            </div>
+            <span class="badge badge-unknown" style="letter-spacing:1px">UNCONFIGURED</span>
+          </div>
+          <div class="card-body">
+            <div style="display:flex;align-items:flex-start;gap:14px;background:rgba(255,255,255,0.02);padding:16px;border-radius:var(--radius-sm);border:1px dashed var(--border)">
+              <div style="font-size:28px">🔑</div>
+              <div style="flex:1">
+                <div style="font-weight:600;font-size:13px;color:var(--text-primary);margin-bottom:4px">
+                  Contextual AI Reasoning Ready for Activation
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px">
+                  ${reason} To enable automated LLM reasoning, deceptive linguistics analysis, brand impersonation detection, and SOC playbook recommendations:
+                </div>
+                <div style="background:var(--bg-input);padding:10px 14px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--cyan);margin-bottom:12px;border:1px solid var(--border)">
+                  GEMINI_API_KEY=your_gemini_api_key_here
+                </div>
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="text-decoration:none">
+                    Get Free Google AI Studio Key ↗
+                  </a>
+                  <button class="btn btn-primary btn-sm" onclick="app.triggerGeminiAnalysis()">
+                    ⚡ Test / Run Gemini Analysis Now
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const classificationColors = {
+      phishing: 'var(--critical)',
+      suspicious: 'var(--high)',
+      benign: 'var(--low)',
+      insufficient_evidence: 'var(--medium)',
+      unavailable: 'var(--text-muted)'
+    };
+    const cColor = classificationColors[gemini.classification] || 'var(--cyan)';
+
+    const riskColors = {
+      critical: '#ff2d55',
+      high: '#ff6b35',
+      medium: '#ffd60a',
+      low: '#34d399',
+      none: '#64748b'
+    };
+    const rColor = riskColors[gemini.riskLevel] || '#64748b';
+
+    return `
+      <div class="card mb-16" style="border: 1px solid ${cColor}40; background: linear-gradient(135deg, rgba(13, 21, 39, 0.95) 0%, rgba(10, 25, 47, 0.85) 100%); box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:22px">✨</span>
+            <div>
+              <div class="card-title" style="font-size:15px;color:var(--text-primary);font-weight:700">
+                Google Gemini Contextual Threat Reasoning
+              </div>
+              <div style="font-size:11px;color:var(--cyan);font-family:'JetBrains Mono',monospace">
+                Model: ${gemini.modelUsed || 'gemini-flash'} &bull; Google GenAI SDK
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span class="badge" style="background:${cColor}20;color:${cColor};border:1px solid ${cColor}60;font-weight:700;font-size:11px;padding:4px 10px">
+              ${gemini.classification.toUpperCase()}
+            </span>
+            <span class="badge" style="background:${rColor}20;color:${rColor};border:1px solid ${rColor}60;font-weight:700;font-size:11px;padding:4px 10px">
+              RISK: ${gemini.riskLevel.toUpperCase()}
+            </span>
+            <button class="btn btn-secondary btn-sm" onclick="app.triggerGeminiAnalysis()" style="font-size:11px;padding:4px 10px">
+              🔄 Re-run AI
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <!-- Executive Summary Callout -->
+          <div style="padding:14px 16px;background:rgba(0, 212, 255, 0.05);border-radius:var(--radius-sm);border-left:4px solid ${cColor};margin-bottom:16px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:var(--text-muted);margin-bottom:4px">
+              Executive AI Security Summary
+            </div>
+            <div style="font-size:13px;color:var(--text-primary);line-height:1.5;font-weight:500">
+              ${gemini.plainLanguageSummary || gemini.summary}
+            </div>
+            <div style="display:flex;align-items:center;gap:14px;margin-top:10px;font-size:11px;color:var(--text-secondary)">
+              <div>AI Confidence: <strong style="color:var(--cyan);font-family:'JetBrains Mono',monospace">${gemini.confidence}${typeof gemini.confidence === 'number' ? '%' : ''}</strong></div>
+              ${typeof gemini.confidence === 'number' ? `
+                <div style="flex:1;max-width:140px;height:5px;background:var(--bg-input);border-radius:3px;overflow:hidden">
+                  <div style="width:${gemini.confidence}%;height:100%;background:${cColor};border-radius:3px"></div>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+
+          <!-- Grid: Threat Indicators & Social Engineering -->
+          <div class="grid-2 mb-16">
+            <!-- Threat Indicators -->
+            <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:6px">
+                <span>🎯 Specific Threat Indicators (${gemini.threatIndicators.length})</span>
+              </div>
+              ${gemini.threatIndicators.length > 0 ? `
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  ${gemini.threatIndicators.map(ti => {
+                    const sev = (ti.severity || 'medium').toLowerCase();
+                    const sColor = sev === 'high' ? 'var(--critical)' : sev === 'medium' ? 'var(--medium)' : 'var(--low)';
+                    return `
+                      <div style="padding:8px 10px;background:rgba(255,255,255,0.02);border-radius:4px;border-left:3px solid ${sColor}">
+                        <div style="display:flex;justify-content:space-between;align-items:center">
+                          <strong style="font-size:12px;color:var(--text-primary)">${ti.indicator}</strong>
+                          <span class="badge" style="background:${sColor}20;color:${sColor};font-size:9px">${sev.toUpperCase()}</span>
+                        </div>
+                        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;line-height:1.4">${ti.evidence}</div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              ` : '<div style="font-size:11px;color:var(--text-muted)">No explicit technical indicators flagged.</div>'}
+            </div>
+
+            <!-- Social Engineering Tactics -->
+            <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px">
+                🧠 Psychological & Urgency Tactics (${gemini.socialEngineeringIndicators.length})
+              </div>
+              ${gemini.socialEngineeringIndicators.length > 0 ? `
+                <ul style="padding-left:18px;margin:0;font-size:12px;color:var(--text-secondary);line-height:1.6">
+                  ${gemini.socialEngineeringIndicators.map(t => `<li style="margin-bottom:4px"><span style="color:var(--text-primary)">${t}</span></li>`).join('')}
+                </ul>
+              ` : '<div style="font-size:11px;color:var(--text-muted)">No aggressive social engineering patterns identified.</div>'}
+
+              <!-- Suspicious URLs or Domains identified by Gemini -->
+              ${(gemini.suspiciousUrls.length > 0 || gemini.suspiciousDomains.length > 0) ? `
+                <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+                  <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:6px">
+                    🚨 AI-Identified Deceptive Entities
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:4px">
+                    ${gemini.suspiciousDomains.map(d => `<div class="font-mono text-critical" style="font-size:11px">🌐 Domain: ${d}</div>`).join('')}
+                    ${gemini.suspiciousUrls.map(u => `<div class="font-mono text-warning" style="font-size:11px;word-break:break-all">🔗 Link: ${u}</div>`).join('')}
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+
+          <!-- Recommended Actions / SOC Guidance -->
+          ${gemini.recommendedActions.length > 0 ? `
+            <div style="margin-bottom:16px;padding:12px 14px;background:rgba(52, 211, 153, 0.05);border:1px solid rgba(52, 211, 153, 0.2);border-radius:var(--radius-sm)">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--low);margin-bottom:6px">
+                🛡️ Recommended SOC Remediation & Defense Actions
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                ${gemini.recommendedActions.map((act, i) => `
+                  <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text-primary)">
+                    <span style="color:var(--low);font-weight:bold">${i + 1}.</span>
+                    <span>${act}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+
+          <!-- Detailed Explanation -->
+          ${gemini.explanation ? `
+            <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:8px">
+                📝 In-Depth Forensic & Linguistic Rationale
+              </div>
+              <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;white-space:pre-line">
+                ${gemini.explanation}
+              </div>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  async triggerGeminiAnalysis() {
+    if (!this.currentResult) {
+      this.showToast('No active email analysis loaded.', 'warning', '⚠️');
+      return;
+    }
+    this.showToast('Requesting Gemini AI contextual security reasoning...', 'info', '✨');
+    try {
+      const rawEmail = this.currentResult.rawHeaders || '';
+      const report = this.currentResult.rawResult || {};
+      const aiResult = await window.GmailGuardAPI.analyzeWithGemini(rawEmail, report);
+
+      this.currentResult.geminiAnalysis = aiResult;
+      if (this.currentResult.rawResult) {
+        this.currentResult.rawResult.gemini_analysis = aiResult;
+        this.currentResult.rawResult.ai_analysis = aiResult;
+      }
+      this.showToast('Gemini AI analysis complete!', 'success', '✨');
+      this.renderInvestigation();
+      this.switchInvestigationTab('ai');
+    } catch (err) {
+      this.showToast(`Gemini AI analysis failed: ${err.message}`, 'error', '❌');
+    }
+  }
+
   switchInvestigationTab(tabId) {
     this.activeResultTab = tabId;
     document.querySelectorAll('.result-tab').forEach(t => {
@@ -1728,6 +2577,675 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
     }
     this.navigateTo('investigation');
     this.switchInvestigationTab('ai');
+  }
+
+  _renderGeminiOverviewCallout(r) {
+    const gemini = r.geminiAnalysis;
+    if (!gemini || !gemini.available) return '';
+    const assessment = (gemini.overallAssessment || gemini.geminiAssessment || 'CAUTION').toUpperCase();
+    const color = assessment === 'HIGH_RISK' ? 'var(--critical)' : assessment === 'CAUTION' || assessment === 'SUSPICIOUS' ? 'var(--warning)' : 'var(--low)';
+    const icon = assessment === 'HIGH_RISK' ? '🚨' : assessment === 'CAUTION' || assessment === 'SUSPICIOUS' ? '⚠️' : '✓';
+
+    return `
+      <div class="card mb-16" style="border-left:4px solid ${color};background:linear-gradient(135deg, rgba(13, 21, 39, 0.95) 0%, rgba(10, 25, 47, 0.85) 100%)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:18px">${icon}</span>
+            <strong style="font-size:14px;color:${color}">Gemini Human-Readable Intelligence: ${assessment}</strong>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="app.navigateTo('gemini-security')" style="font-size:11px;padding:4px 10px">
+            Open Full Gemini Security Tab →
+          </button>
+        </div>
+        <div style="font-size:13px;color:var(--text-primary);line-height:1.5;margin-bottom:6px">
+          ${this._escapeHtml(gemini.plainLanguageSummary || gemini.summary || '')}
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);display:flex;gap:12px;flex-wrap:wrap">
+          <span>Stated Intent: <strong style="color:var(--text-secondary)">${this._escapeHtml(gemini.likelyIntent || 'General')}</strong></span>
+          <span>&bull;</span>
+          <span>Categories: <strong style="color:var(--cyan)">${(gemini.contentCategory || []).join(', ') || 'Standard'}</strong></span>
+        </div>
+      </div>
+    `;
+  }
+
+  // ─── AI SECURITY: GEMINI SECURITY DASHBOARD ────────────────
+  async renderGeminiSecurity() {
+    const content = document.getElementById('page-content');
+    if (!content) return;
+
+    // Default overview from session cases
+    let overview = {
+      total_analyzed: this.sessionInvestigations.length,
+      requires_attention: this.sessionInvestigations.filter(c => c.threatScore >= 40).length,
+      high_risk_count: this.sessionInvestigations.filter(c => c.threatScore >= 70).length,
+      suspicious_count: this.sessionInvestigations.filter(c => c.threatScore >= 40 && c.threatScore < 70).length,
+      caution_count: this.sessionInvestigations.filter(c => c.geminiAnalysis?.overallAssessment === 'CAUTION').length,
+      safe_count: this.sessionInvestigations.filter(c => c.threatScore < 40).length,
+      common_patterns: [],
+      categories_distribution: {}
+    };
+
+    try {
+      const remoteOverview = await window.GmailGuardAPI.getGeminiOverview();
+      if (remoteOverview && remoteOverview.total_analyzed > 0) {
+        overview = remoteOverview;
+      }
+    } catch (_) {}
+
+    const r = this.currentResult;
+
+    content.innerHTML = `
+      <div style="max-width:1200px;margin:0 auto" class="animate-in gemini-security-container">
+        <!-- Top Section: Overview Header -->
+        <div class="gmail-inbox-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:26px">🤖</span>
+              <h1 style="font-size:22px;font-weight:800;color:var(--text-primary);margin:0">Google Gemini Security Intelligence</h1>
+              <span class="badge badge-pass font-mono" style="font-size:10px">GenAI Active</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
+              Human-readable security explanations, intent reasoning, and content risk categorization powered by Google GenAI.
+            </div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <button class="btn btn-secondary btn-sm" onclick="app.navigateTo('gmail-inbox')">📧 Open Gmail Inbox</button>
+            <button class="btn btn-primary btn-sm" onclick="app.navigateTo('analyze')">🔍 Analyze New Email</button>
+          </div>
+        </div>
+
+        <!-- PART 14 B: GEMINI MAIL SECURITY OVERVIEW DASHBOARD -->
+        <div class="card" style="border:1px solid rgba(0, 212, 255, 0.25);background:linear-gradient(135deg, rgba(13, 21, 39, 0.95) 0%, rgba(10, 25, 47, 0.85) 100%)">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <div class="card-title" style="color:var(--cyan);display:flex;align-items:center;gap:8px">
+              <span>📊</span>
+              <span>Gemini Mail Security Overview</span>
+            </div>
+            <span class="badge badge-unknown font-mono" style="font-size:11px">${overview.total_analyzed} Emails Evaluated</span>
+          </div>
+          <div class="card-body">
+            <!-- Metrics Grid -->
+            <div class="stats-grid mb-20" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr))">
+              <div class="stat-card" style="--accent-color:var(--cyan)">
+                <div class="stat-value">${overview.total_analyzed}</div>
+                <div class="stat-label">Analyzed Emails</div>
+              </div>
+              <div class="stat-card" style="--accent-color:var(--warning)">
+                <div class="stat-value text-warning">${overview.requires_attention}</div>
+                <div class="stat-label">⚠️ Requires Attention</div>
+              </div>
+              <div class="stat-card" style="--accent-color:var(--critical)">
+                <div class="stat-value text-critical">${overview.high_risk_count}</div>
+                <div class="stat-label">🔴 High-Risk</div>
+              </div>
+              <div class="stat-card" style="--accent-color:#ffd60a">
+                <div class="stat-value" style="color:#ffd60a">${overview.suspicious_count}</div>
+                <div class="stat-label">🟡 Suspicious</div>
+              </div>
+              <div class="stat-card" style="--accent-color:var(--low)">
+                <div class="stat-value text-low">${overview.safe_count}</div>
+                <div class="stat-label">🟢 No Major Concerns</div>
+              </div>
+            </div>
+
+            <!-- Common Patterns & Category Distribution -->
+            <div class="grid-2" style="gap:16px">
+              <div style="background:var(--bg-input);padding:14px;border-radius:var(--radius-sm);border:1px solid var(--border)">
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px">
+                  🧠 Common Patterns Observed Across Mailbox
+                </div>
+                ${overview.common_patterns && overview.common_patterns.length > 0 ? `
+                  <ul style="padding-left:18px;margin:0;font-size:12px;color:var(--text-secondary);line-height:1.7">
+                    ${overview.common_patterns.map(p => `<li><span style="color:var(--text-primary)">${this._escapeHtml(p)}</span></li>`).join('')}
+                  </ul>
+                ` : `
+                  <div style="font-size:12px;color:var(--text-muted)">
+                    No recurring threat patterns observed in analyzed messages yet.
+                  </div>
+                `}
+              </div>
+
+              <div style="background:var(--bg-input);padding:14px;border-radius:var(--radius-sm);border:1px solid var(--border)">
+                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px">
+                  🏷️ Content Category Distribution
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:8px">
+                  ${Object.keys(overview.categories_distribution || {}).length > 0 ? `
+                    ${Object.entries(overview.categories_distribution).map(([cat, count]) => `
+                      <span class="badge" style="background:rgba(0, 212, 255, 0.1);color:var(--cyan);border:1px solid rgba(0, 212, 255, 0.3);font-size:11px;padding:4px 8px">
+                        ${this._escapeHtml(cat)} (${count})
+                      </span>
+                    `).join('')}
+                  ` : `
+                    <span style="font-size:12px;color:var(--text-muted)">No category tags recorded yet.</span>
+                  `}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PART 13 & 14 A: PER-EMAIL HUMAN-READABLE GEMINI SECURITY REPORT -->
+        ${r ? this._renderActiveEmailGeminiReport(r) : `
+          <div class="card" style="text-align:center;padding:50px 20px">
+            <div style="font-size:42px;margin-bottom:12px">🎯</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:6px">No Specific Email Selected for In-Depth AI Explanation</div>
+            <div style="font-size:13px;color:var(--text-secondary);max-width:520px;margin:0 auto 20px;line-height:1.5">
+              Select any message from your connected Gmail inbox, or upload a .eml file to inspect the complete human-readable Gemini security reasoning.
+            </div>
+            <div style="display:flex;gap:12px;justify-content:center">
+              <button class="btn btn-primary" onclick="app.navigateTo('gmail-inbox')">Open Gmail Inbox →</button>
+              <button class="btn btn-secondary" onclick="app.navigateTo('analyze')">Upload / Paste .EML →</button>
+            </div>
+          </div>
+        `}
+      </div>
+    `;
+  }
+
+  _renderActiveEmailGeminiReport(r) {
+    const gemini = r.geminiAnalysis;
+    const assessment = (gemini?.overallAssessment || gemini?.geminiAssessment || (r.threatScore >= 70 ? 'HIGH_RISK' : r.threatScore >= 40 ? 'SUSPICIOUS' : 'SAFE')).toUpperCase();
+    const isSafe = assessment === 'SAFE';
+    const isCaution = assessment === 'CAUTION';
+    const isSuspicious = assessment === 'SUSPICIOUS';
+    const isHighRisk = assessment === 'HIGH_RISK';
+
+    const bannerClass = isHighRisk ? 'high_risk' : isSuspicious ? 'suspicious' : isCaution ? 'caution' : 'safe';
+    const bannerIcon = isHighRisk ? '🚨' : isSuspicious ? '⚠️' : isCaution ? '⚠️' : '🟢';
+    const bannerTitle = isHighRisk ? 'CRITICAL SECURITY THREAT DETECTED' : isSuspicious ? 'SUSPICIOUS EMAIL — EXERCISE CAUTION' : isCaution ? 'BE CAREFUL — POTENTIAL CONCERN' : 'NO MAJOR SECURITY THREATS DETECTED';
+    const bannerColor = isHighRisk ? 'var(--critical)' : isSuspicious ? 'var(--high)' : isCaution ? 'var(--warning)' : 'var(--low)';
+
+    const plainSummary = gemini?.plainLanguageSummary || gemini?.summary || 'Our security analysis has evaluated this email.';
+    const whatItIsAbout = gemini?.whatThisEmailIsAbout || r.email?.subject || 'Message communication';
+    const likelyIntent = gemini?.likelyIntent || 'General communication';
+    const categories = gemini?.contentCategory || [];
+    const concerns = gemini?.securityConcerns || [];
+    const actions = gemini?.userActions || gemini?.recommendedActions || [];
+    const techSummary = gemini?.technicalFindingsSummary || gemini?.explanation || 'Authentication and dynamic sandbox checks completed.';
+
+    return `
+      <!-- Human-Readable Assessment Banner -->
+      <div class="gemini-banner-card ${bannerClass}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+          <div>
+            <div class="gemini-verdict-title" style="color:${bannerColor}">
+              <span>${bannerIcon}</span>
+              <span>${bannerTitle}</span>
+            </div>
+            <div style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:8px;line-height:1.5">
+              ${this._escapeHtml(plainSummary)}
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <span>Subject: <strong style="color:var(--text-primary)">${this._escapeHtml(r.email?.subject || '(No Subject)')}</strong></span>
+              <span>&bull;</span>
+              <span>Sender: <code style="color:var(--cyan)">${this._escapeHtml(r.email?.from || '')}</code></span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="badge font-mono" style="background:${bannerColor}25;color:${bannerColor};border:1px solid ${bannerColor}60;font-size:12px;padding:6px 12px">
+              ${assessment}
+            </span>
+          </div>
+        </div>
+
+        <!-- Why? Section -->
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px">
+            Why is this email flagged as ${assessment}?
+          </div>
+          <ul style="padding-left:18px;margin:0 0 16px 0;font-size:13px;color:var(--text-secondary);line-height:1.7">
+            <li><strong style="color:var(--text-primary)">Sender's Stated Message:</strong> ${this._escapeHtml(whatItIsAbout)}</li>
+            <li><strong style="color:var(--text-primary)">Identified Intent:</strong> ${this._escapeHtml(likelyIntent)}</li>
+            ${concerns.map(c => `
+              <li><strong style="color:var(--text-primary)">${this._escapeHtml(c.title || 'Security Concern')}:</strong> ${this._escapeHtml(c.explanation || '')}</li>
+            `).join('')}
+            ${concerns.length === 0 ? `
+              <li>Our technical checks and language models found standard communication patterns without aggressive urgency or deceit.</li>
+            ` : ''}
+          </ul>
+        </div>
+
+        <!-- Plain Technical Security Checks (Part 13) -->
+        <div style="margin-top:16px;background:rgba(0,0,0,0.25);padding:14px;border-radius:var(--radius-sm);border:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px">
+            🛡️ Technical Security Checks in Plain Language
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div class="gemini-check-item">
+              <span class="gemini-check-icon ${r.authentication?.spf?.status === 'PASS' ? 'pass' : 'warn'}">
+                ${r.authentication?.spf?.status === 'PASS' ? '✓' : '⚠️'}
+              </span>
+              <div>
+                <strong>Cryptographic Authentication (SPF/DKIM/DMARC):</strong>
+                ${r.authentication?.spf?.status === 'PASS' && r.authentication?.dkim?.status === 'PASS' ? 
+                  'The sender domain verified cryptographically, confirming transit integrity.' : 
+                  'Authentication headers are absent or misaligned; domain ownership cannot be mathematically verified.'}
+              </div>
+            </div>
+            <div class="gemini-check-item">
+              <span class="gemini-check-icon ${(r.urls?.suspicious_count || 0) === 0 ? 'pass' : 'fail'}">
+                ${(r.urls?.suspicious_count || 0) === 0 ? '✓' : '✗'}
+              </span>
+              <div>
+                <strong>Link & Dynamic Sandbox Inspection:</strong>
+                ${(r.urls?.suspicious_count || 0) === 0 ? 
+                  'Links were inspected dynamically in our isolated Chromium sandbox. No known malware payloads or phishing landing pages were detected.' : 
+                  'One or more links match known phishing databases or triggered suspicious behaviors in the browser sandbox.'}
+              </div>
+            </div>
+            <div class="gemini-check-item">
+              <span class="gemini-check-icon ${(r.attachments?.length || 0) === 0 || !r.attachments?.some(a => a.is_dangerous) ? 'pass' : 'fail'}">
+                ${(r.attachments?.length || 0) === 0 || !r.attachments?.some(a => a.is_dangerous) ? '✓' : '✗'}
+              </span>
+              <div>
+                <strong>Attachment Threat Assessment:</strong>
+                ${(r.attachments?.length || 0) === 0 ? 
+                  'No attachments present in this email.' : 
+                  !r.attachments?.some(a => a.is_dangerous) ? 
+                  'Attachments inspected statically. No macro scripts or suspicious executable signatures identified.' : 
+                  'Dangerous file types or suspicious code identified in attached files.'}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Actionable Recommendations -->
+        ${actions.length > 0 ? `
+          <div style="margin-top:16px;padding:14px;background:rgba(52, 211, 153, 0.08);border:1px solid rgba(52, 211, 153, 0.25);border-radius:var(--radius-sm)">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--low);margin-bottom:8px">
+              💡 Actionable Recommendations for You
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              ${actions.map((act, i) => `
+                <div style="display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--text-primary)">
+                  <span style="color:var(--low);font-weight:700">${i + 1}.</span>
+                  <span>${this._escapeHtml(act)}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- PART 16: VISUAL DISTINCTION: TECHNICAL FORENSIC SCORE vs GEMINI INTENT ASSESSMENT -->
+      <div class="gemini-contrast-container">
+        <!-- Card 1: Technical Threat Score -->
+        <div class="gemini-contrast-box technical">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--cyan)">
+              🎯 Technical Threat Score
+            </div>
+            <span class="badge" style="font-size:12px;font-weight:700;background:var(--bg-input);color:var(--cyan);border:1px solid var(--cyan)50">
+              ${r.threatScore}/100 — ${r.verdict}
+            </span>
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px">
+            Synthesized from deterministic technical evidence: RFC 5322 header anomaly checks, SPF/DKIM/DMARC alignment, IP geolocation, PhishTank threat feeds, and Browserless Chromium sandbox execution.
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace">
+            SPF: ${r.authentication?.spf?.status || 'NONE'} &bull; DKIM: ${r.authentication?.dkim?.status || 'NONE'} &bull; URLs Scanned: ${r.urls?.count || 0}
+          </div>
+        </div>
+
+        <!-- Card 2: Gemini Intent & Content Assessment -->
+        <div class="gemini-contrast-box intent">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#a855f7">
+              🤖 Gemini Content Assessment
+            </div>
+            <span class="badge" style="font-size:12px;font-weight:700;background:#a855f720;color:#c084fc;border:1px solid #a855f750">
+              ${assessment}
+            </span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+            ${categories.map(c => `
+              <span class="badge" style="background:rgba(168, 85, 247, 0.15);color:#d8b4fe;border:1px solid rgba(168, 85, 247, 0.3);font-size:10px">
+                ${this._escapeHtml(c)}
+              </span>
+            `).join('')}
+          </div>
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.5">
+            <strong>Key Distinction:</strong> Technical checks evaluate whether software is actively attacking your computer. Gemini evaluates human intent, social pressure, sensitive requests, and inappropriate content. An email may contain clean URLs while still being a social engineering scam or adult content!
+          </div>
+        </div>
+      </div>
+
+      <!-- Collapsible Raw Audit Details for SOC / Engineers -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="const b=document.getElementById('gemini-raw-audit');b.style.display=b.style.display==='none'?'block':'none'">
+          <div class="card-title" style="font-size:13px">🔬 Show / Hide SOC Technical AI Audit Payload (JSON)</div>
+          <span style="font-size:12px;color:var(--text-muted)">Toggle ▼</span>
+        </div>
+        <div class="card-body" id="gemini-raw-audit" style="display:none;padding:14px">
+          <pre class="font-mono" style="background:var(--bg-input);padding:14px;border-radius:6px;font-size:11px;color:var(--cyan);overflow-x:auto;max-height:360px">${this._escapeHtml(JSON.stringify(gemini, null, 2))}</pre>
+        </div>
+      </div>
+    `;
+  }
+
+  // ─── GMAIL ACTIONS & HANDLERS ──────────────────────────────
+  async loadGmailStatus() {
+    try {
+      const status = await window.GmailGuardAPI.getGmailStatus();
+      this.gmailConnected = Boolean(status.connected);
+      this.gmailConfigured = Boolean(status.configured);
+      this.gmailUser = status.user || (status.email ? { email_address: status.email, messages_total: status.messages_total } : null);
+      this.renderSidebar();
+      const statusBadge = document.getElementById('gmail-status-badge');
+      if (statusBadge) {
+        statusBadge.className = `badge ${this.gmailConnected ? 'badge-pass' : 'badge-unknown'} font-mono`;
+        statusBadge.textContent = this.gmailConnected ? '🟢 OAuth Connected' : '🟡 Offline Demo Stream';
+      }
+      const bannerContainer = document.getElementById('gmail-connect-banner-container');
+      if (bannerContainer) {
+        bannerContainer.innerHTML = this._renderGmailConnectionBanner();
+      }
+    } catch (_) {}
+  }
+
+  async loadGmailMessages(query = '') {
+    this.gmailLoading = true;
+    try {
+      const res = await window.GmailGuardAPI.getGmailMessages(25, query);
+      this.gmailMessages = res.messages || [];
+      if (res.connected != null) {
+        this.gmailConnected = Boolean(res.connected);
+        this.gmailUser = res.user || this.gmailUser;
+        this.renderSidebar();
+      }
+
+      // Populate per-email analysisState without clobbering any active in-flight states
+      this.gmailMessages.forEach(m => {
+        if (!this.analysisState[m.id] || this.analysisState[m.id].status !== 'analyzing') {
+          if (m.threat_score != null || m.analysis_status === 'ANALYZED') {
+            this.analysisState[m.id] = {
+              status: 'completed',
+              threatScore: m.threat_score,
+              verdict: m.threat_verdict || 'EVALUATED',
+              geminiAssessment: m.gemini_assessment || 'EVALUATED',
+              error: null,
+            };
+            this.analysisResults[m.id] = this.analysisResults[m.id] || {
+              threatScore: m.threat_score,
+              verdict: m.threat_verdict,
+              geminiAnalysis: { overallAssessment: m.gemini_assessment }
+            };
+          } else if (!this.analysisState[m.id]) {
+            this.analysisState[m.id] = {
+              status: 'idle',
+              threatScore: null,
+              verdict: null,
+              geminiAssessment: null,
+              error: null,
+            };
+          }
+        }
+      });
+
+      this.renderCurrentGmailMessagesView();
+
+      const bannerContainer = document.getElementById('gmail-connect-banner-container');
+      if (bannerContainer) {
+        bannerContainer.innerHTML = this._renderGmailConnectionBanner();
+      }
+    } catch (err) {
+      this.showToast(`Failed to load Gmail messages: ${err.message}`, 'error', '⚠️');
+    } finally {
+      this.gmailLoading = false;
+    }
+  }
+
+  getFilteredGmailMessages() {
+    let list = [...this.gmailMessages];
+    const filterType = this.activeGmailFilter || 'all';
+
+    if (filterType === 'unread') {
+      list = list.filter(m => m.is_unread);
+    } else if (filterType === 'attachments') {
+      list = list.filter(m => m.has_attachments);
+    } else if (filterType === 'analyzed') {
+      list = list.filter(m => {
+        const st = this.analysisState[m.id];
+        return (st && (st.status === 'completed' || st.threatScore != null)) || m.threat_score != null || m.analyzed;
+      });
+    } else if (filterType === 'pending') {
+      list = list.filter(m => {
+        const st = this.analysisState[m.id];
+        return (!st || (st.status !== 'completed' && st.threatScore == null)) && m.threat_score == null && !m.analyzed;
+      });
+    }
+
+    const q = (this.activeGmailSearch || '').toLowerCase().trim();
+    if (q) {
+      list = list.filter(m =>
+        (m.sender_name || '').toLowerCase().includes(q) ||
+        (m.sender_email || '').toLowerCase().includes(q) ||
+        (m.subject || '').toLowerCase().includes(q) ||
+        (m.snippet || '').toLowerCase().includes(q)
+      );
+    }
+
+    return list;
+  }
+
+  _updateFilterCounts() {
+    const total = this.gmailMessages.length;
+    const unreadCount = this.gmailMessages.filter(m => m.is_unread).length;
+    const attachCount = this.gmailMessages.filter(m => m.has_attachments).length;
+    const analyzedCount = this.gmailMessages.filter(m => {
+      const st = this.analysisState[m.id];
+      return (st && (st.status === 'completed' || st.threatScore != null)) || m.threat_score != null || m.analyzed;
+    }).length;
+    const pendingCount = total - analyzedCount;
+
+    const countAll = document.getElementById('count-all');
+    if (countAll) countAll.textContent = total;
+    const countUnread = document.getElementById('count-unread');
+    if (countUnread) countUnread.textContent = unreadCount;
+    const countAttachments = document.getElementById('count-attachments');
+    if (countAttachments) countAttachments.textContent = attachCount;
+    const countAnalyzed = document.getElementById('count-analyzed');
+    if (countAnalyzed) countAnalyzed.textContent = analyzedCount;
+    const countPending = document.getElementById('count-pending');
+    if (countPending) countPending.textContent = pendingCount;
+  }
+
+  renderCurrentGmailMessagesView() {
+    const container = document.getElementById('gmail-messages-table-container');
+    if (!container) return;
+    container.innerHTML = this._renderGmailMessagesTable();
+    this._updateFilterCounts();
+  }
+
+  _updateGmailRow(messageId) {
+    const msg = this.gmailMessages.find(m => m.id === messageId);
+    if (!msg) return;
+
+    // If currently filtered by pending/analyzed, check if message still belongs in current view
+    const filterType = this.activeGmailFilter || 'all';
+    const st = this.analysisState[messageId] || {};
+    const isNowAnalyzed = (st.status === 'completed' || st.threatScore != null);
+
+    if ((filterType === 'pending' && isNowAnalyzed) || (filterType === 'analyzed' && !isNowAnalyzed)) {
+      this.renderCurrentGmailMessagesView();
+      return;
+    }
+
+    const rowEl = document.getElementById(`gmail-row-${messageId}`);
+    if (rowEl) {
+      const tempWrapper = document.createElement('tbody');
+      tempWrapper.innerHTML = this._renderGmailRowHtml(msg);
+      const newRow = tempWrapper.firstElementChild;
+      if (newRow) {
+        rowEl.replaceWith(newRow);
+      }
+    } else {
+      this.renderCurrentGmailMessagesView();
+    }
+    this._updateFilterCounts();
+  }
+
+  filterGmailMessages(query) {
+    this.activeGmailSearch = query || '';
+    this.gmailCurrentPage = 1;
+    this.renderCurrentGmailMessagesView();
+  }
+
+  setGmailFilter(filterType) {
+    this.activeGmailFilter = filterType;
+    this.gmailCurrentPage = 1;
+    document.querySelectorAll('.gmail-filter-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.filter === filterType);
+    });
+    this.renderCurrentGmailMessagesView();
+  }
+
+  async connectGmail() {
+    this.showToast('Initiating Google OAuth consent flow...', 'info', '🔐');
+    try {
+      const auth = await window.GmailGuardAPI.getGmailAuthUrl();
+      if (auth.auth_url) {
+        window.location.href = auth.auth_url;
+      } else {
+        this.toggleOAuthHelpModal();
+        this.showToast('Google OAuth Client ID not configured. See Setup Guide.', 'warning', '⚠️');
+      }
+    } catch (err) {
+      this.toggleOAuthHelpModal();
+      this.showToast(`OAuth setup required: ${err.message}`, 'warning', '⚠️');
+    }
+  }
+
+  async disconnectGmail() {
+    try {
+      await window.GmailGuardAPI.disconnectGmail();
+      this.gmailConnected = false;
+      this.gmailUser = null;
+      this.analysisState = {};
+      this.analysisResults = {};
+      this.showToast('Gmail account disconnected.', 'info', '🔌');
+      this.renderSidebar();
+      await this.loadGmailMessages();
+    } catch (err) {
+      this.showToast(`Disconnect error: ${err.message}`, 'error', '⚠️');
+    }
+  }
+
+  toggleOAuthHelpModal() {
+    const modal = document.getElementById('gmail-oauth-modal');
+    if (modal) {
+      modal.style.display = modal.style.display === 'none' ? 'flex' : 'none';
+    }
+  }
+
+  async analyzeGmailMessage(messageId, reanalyze = false) {
+    // Set per-message state to analyzing
+    this.analysisState[messageId] = {
+      status: 'analyzing',
+      threatScore: null,
+      verdict: null,
+      geminiAssessment: null,
+      error: null,
+      timestamp: Date.now(),
+    };
+
+    // Update only this specific row in the DOM
+    this._updateGmailRow(messageId);
+    this.showToast(`Analyzing email ${messageId.slice(0, 8)}...`, 'info', '⚡');
+
+    try {
+      const report = await window.GmailGuardAPI.analyzeGmailMessage(messageId, reanalyze);
+      const normalized = window.ThreatReportNormalizer.normalize(report);
+
+      // Key full forensic results by Gmail message ID
+      this.analysisResults[messageId] = normalized;
+      this.currentResult = normalized;
+
+      // Update per-email state
+      this.analysisState[messageId] = {
+        status: 'completed',
+        threatScore: normalized.threatScore,
+        verdict: normalized.verdict,
+        geminiAssessment: normalized.geminiAnalysis?.overallAssessment || 'EVALUATED',
+        error: null,
+        timestamp: Date.now(),
+      };
+
+      // Update message entry in local array
+      const idx = this.gmailMessages.findIndex(m => m.id === messageId);
+      if (idx >= 0) {
+        this.gmailMessages[idx].threat_score = normalized.threatScore;
+        this.gmailMessages[idx].threat_verdict = normalized.verdict;
+        this.gmailMessages[idx].gemini_assessment = normalized.geminiAnalysis?.overallAssessment || 'EVALUATED';
+        this.gmailMessages[idx].analyzed = true;
+        this.gmailMessages[idx].is_unread = false;
+      }
+
+      // Add to session investigations list
+      const existing = this.sessionInvestigations.findIndex(c => c.caseId === normalized.caseId);
+      if (existing >= 0) {
+        this.sessionInvestigations[existing] = normalized;
+      } else {
+        this.sessionInvestigations.unshift(normalized);
+      }
+
+      this.showToast(`Analysis complete: ${normalized.verdict} (Score: ${normalized.threatScore}/100)`, 'success', '🎯');
+
+      // Update only this specific row in DOM without re-rendering or navigating away
+      this._updateGmailRow(messageId);
+      this._updateFilterCounts();
+
+      // Update session banner counts if present in DOM
+      const bannerContainer = document.getElementById('gmail-connect-banner-container');
+      if (bannerContainer) {
+        bannerContainer.innerHTML = this._renderGmailConnectionBanner();
+      }
+    } catch (err) {
+      this.analysisState[messageId] = {
+        status: 'error',
+        threatScore: null,
+        verdict: null,
+        geminiAssessment: null,
+        error: err.message || 'Analysis failed',
+        timestamp: Date.now(),
+      };
+      this._updateGmailRow(messageId);
+      this._updateFilterCounts();
+      this.showToast(`Analysis failed: ${err.message}`, 'error', '❌');
+    }
+  }
+
+  async viewGmailAnalysis(messageId) {
+    // Check if in session investigations first
+    const fromSession = this.sessionInvestigations.find(c => c.rawResult?.gmail_message_id === messageId);
+    if (fromSession) {
+      this.currentResult = fromSession;
+      this.navigateTo('gemini-security');
+      return;
+    }
+
+    if (this.analysisResults[messageId] && this.analysisResults[messageId].caseId) {
+      this.currentResult = this.analysisResults[messageId];
+      this.navigateTo('gemini-security');
+      return;
+    }
+
+    try {
+      this.showToast('Fetching cached forensic and Gemini analysis...', 'info', '🔍');
+      const cached = await window.GmailGuardAPI.getGmailAnalysis(messageId);
+      if (cached && !cached.error) {
+        const normalized = window.ThreatReportNormalizer.normalize(cached);
+        this.currentResult = normalized;
+        this.navigateTo('gemini-security');
+      } else {
+        // Run analysis on demand
+        await this.analyzeGmailMessage(messageId, false);
+      }
+    } catch (err) {
+      this.showToast(`Error opening analysis: ${err.message}`, 'error', '⚠️');
+    }
   }
 
   // ─── G. REPORTS ────────────────────────────────────────────
@@ -1820,8 +3338,4 @@ Received: from mail.bank-alert.com (185.234.219.47) by mx.example.com...
   }
 }
 
-// Instantiate application on window load
-window.addEventListener('DOMContentLoaded', () => {
-  window.app = new GmailGuardApp();
-  window.app.init();
-});
+// App class is instantiated from index.html with error boundary wrapping.

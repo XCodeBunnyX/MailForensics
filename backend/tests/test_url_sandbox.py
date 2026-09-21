@@ -1,312 +1,297 @@
 """
-GmailGuard — URL Dynamic Analysis Sandbox Tests (urlscan.io)
+GmailGuard — Local Browserless Chromium Sandbox Tests
 
 Tests:
-1. submit_scan: success, empty URL, missing API key, 400, 429, 401/403, URLError.
-2. poll_scan_result: success, 404 retry loop, timeout, 429, URLError.
-3. extract_sandbox_findings: clean URL, redirects, payload downloads, JS console errors, malicious verdicts.
-4. scan_url_dynamic & analyze_urls_dynamic: mock mode, deduplication, max_scans limit, disabled handling.
-5. Evidence correlation & report generator integration.
-6. FastAPI /sandbox/scan-url endpoint.
+1. SSRF Protection: localhost, 127.0.0.1, IPv6 loopback (::1), RFC 1918 private IPs,
+   link-local (169.254.169.254), invalid schemes, empty URL.
+2. Live Browserless Execution: https://example.com, screenshot file creation,
+   status=COMPLETED, title extraction, network event capture, contacted domains/IPs.
+3. Redirect handling & chain capture.
+4. Console & Page Error capturing.
+5. Download detection without host execution.
+6. Timeout handling & graceful degradation.
+7. Cleanup on error: isolated context & browser closed.
+8. Deterministic mock mode fallback (MOCK_URLSCAN=True).
+9. Batch analysis (analyze_urls_dynamic): deduplication & rate limits.
+10. FastAPI endpoints: POST /sandbox/scan-url and GET /screenshots/{filename}.png.
 """
 
 from __future__ import annotations
 
-import json
-import urllib.error
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
 from .. import config
 from ..api import app
-from ..evidence_correlator import correlate_evidence
-from ..main import analyze_email
-from ..report_generator import generate_report
 from ..url_sandbox import (
     URLScanFinding,
     URLSandboxAnalysis,
     analyze_urls_dynamic,
-    extract_sandbox_findings,
-    poll_scan_result,
+    is_ssrf_risk,
+    scan_url_browserless,
     scan_url_dynamic,
-    submit_scan,
 )
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. SUBMIT SCAN TESTS
+# 1. SSRF PROTECTION TESTS
 # ═══════════════════════════════════════════════════════════════════
 
-class TestSubmitScan:
-    """Test urlscan.io submission API call."""
+class TestSSRFProtection:
+    """Validate that local, private, and internal IPs are strictly blocked."""
 
-    def test_missing_api_key(self):
-        uuid, result_url, err = submit_scan("https://example.com", api_key="")
-        assert uuid is None
-        assert result_url is None
-        assert "not configured" in err
+    def test_localhost_blocked(self):
+        blocked, reason = is_ssrf_risk("http://localhost:3000")
+        assert blocked is True
+        assert "blocked" in reason.lower()
 
-    def test_empty_url(self):
-        uuid, result_url, err = submit_scan("", api_key="test-key")
-        assert uuid is None
-        assert "empty" in err
+    def test_127_loopback_blocked(self):
+        blocked, reason = is_ssrf_risk("http://127.0.0.1/admin")
+        assert blocked is True
+        assert "loopback" in reason.lower() or "blocked" in reason.lower()
 
-    @patch("urllib.request.urlopen")
-    def test_submit_success(self, mock_urlopen):
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({
-            "message": "Submission successful",
-            "uuid": "01a082d4-test-uuid-1234",
-            "result": "https://urlscan.io/result/01a082d4-test-uuid-1234/",
-            "api": "https://urlscan.io/api/v1/result/01a082d4-test-uuid-1234/",
-        }).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
+    def test_127_subnet_blocked(self):
+        blocked, reason = is_ssrf_risk("http://127.0.0.2:8080")
+        assert blocked is True
+        assert "blocked" in reason.lower()
 
-        uuid, result_url, err = submit_scan("https://example.com", api_key="valid-key")
-        assert uuid == "01a082d4-test-uuid-1234"
-        assert result_url == "https://urlscan.io/result/01a082d4-test-uuid-1234/"
-        assert err is None
+    def test_ipv6_loopback_blocked(self):
+        blocked, reason = is_ssrf_risk("http://[::1]:8000")
+        assert blocked is True
+        assert "loopback" in reason.lower() or "blocked" in reason.lower()
 
-    @patch("urllib.request.urlopen")
-    def test_submit_rate_limited_429(self, mock_urlopen):
-        err = urllib.error.HTTPError(
-            url="https://urlscan.io/api/v1/scan/",
-            code=429,
-            msg="Too Many Requests",
-            hdrs={},
-            fp=MagicMock(read=lambda: b'{"message": "Rate limit exceeded"}'),
-        )
-        mock_urlopen.side_effect = err
+    def test_rfc1918_10_network_blocked(self):
+        blocked, reason = is_ssrf_risk("http://10.0.0.5/internal")
+        assert blocked is True
+        assert "private" in reason.lower() or "blocked" in reason.lower()
 
-        uuid, result_url, err_msg = submit_scan("https://example.com", api_key="valid-key")
-        assert uuid is None
-        assert "rate limit reached (HTTP 429)" in err_msg
+    def test_rfc1918_192_168_network_blocked(self):
+        blocked, reason = is_ssrf_risk("http://192.168.1.1/router")
+        assert blocked is True
+        assert "private" in reason.lower() or "blocked" in reason.lower()
 
-    @patch("urllib.request.urlopen")
-    def test_submit_auth_error_401(self, mock_urlopen):
-        err = urllib.error.HTTPError(
-            url="https://urlscan.io/api/v1/scan/",
-            code=401,
-            msg="Unauthorized",
-            hdrs={},
-            fp=MagicMock(read=lambda: b'{"message": "Invalid API key"}'),
-        )
-        mock_urlopen.side_effect = err
+    def test_rfc1918_172_16_network_blocked(self):
+        blocked, reason = is_ssrf_risk("http://172.16.0.1:8080")
+        assert blocked is True
+        assert "private" in reason.lower() or "blocked" in reason.lower()
 
-        uuid, result_url, err_msg = submit_scan("https://example.com", api_key="bad-key")
-        assert uuid is None
-        assert "authentication error (HTTP 401)" in err_msg
+    def test_link_local_cloud_metadata_blocked(self):
+        blocked, reason = is_ssrf_risk("http://169.254.169.254/latest/meta-data")
+        assert blocked is True
+        assert "blocked" in reason.lower()
 
-    @patch("urllib.request.urlopen")
-    def test_submit_network_error(self, mock_urlopen):
-        mock_urlopen.side_effect = urllib.error.URLError("DNS resolution failed")
+    def test_unsupported_scheme_blocked(self):
+        blocked, reason = is_ssrf_risk("ftp://example.com/file.txt")
+        assert blocked is True
+        assert "scheme" in reason.lower()
 
-        uuid, result_url, err_msg = submit_scan("https://example.com", api_key="valid-key")
-        assert uuid is None
-        assert "Network connection failed" in err_msg
+    def test_public_domain_allowed(self):
+        blocked, reason = is_ssrf_risk("https://example.com")
+        assert blocked is False
+        assert reason == ""
+
+    def test_scan_url_dynamic_ssrf_returns_blocked_status(self):
+        finding = scan_url_dynamic("http://localhost:3000", force_live=True)
+        assert finding.status == "BLOCKED"
+        assert finding.verdict == "UNKNOWN"
+        assert finding.intelligence_available is True
+        assert "SSRF_ATTEMPT_BLOCKED" in finding.behavior_indicators
+        assert any("SSRF" in r for r in finding.reasons)
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 2. POLL SCAN RESULT TESTS
+# 2. LIVE BROWSERLESS EXECUTION TESTS (https://example.com)
 # ═══════════════════════════════════════════════════════════════════
 
-class TestPollScanResult:
-    """Test polling loop and timeout handling."""
+class TestLiveBrowserlessSandbox:
+    """Test live dynamic browser execution against self-hosted Browserless container."""
 
-    def test_invalid_uuid(self):
-        data, err = poll_scan_result("")
-        assert data is None
-        assert "Invalid scan UUID" in err
+    def test_successful_scan_example_com(self):
+        finding = scan_url_dynamic("https://example.com", force_live=True)
 
-    @patch("urllib.request.urlopen")
-    def test_poll_immediate_success(self, mock_urlopen):
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({
-            "task": {"uuid": "test-uuid"},
-            "page": {"url": "https://example.com/"},
-        }).encode("utf-8")
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        data, err = poll_scan_result("test-uuid", api_key="valid-key", max_wait_s=5)
-        assert data is not None
-        assert err is None
-        assert data["task"]["uuid"] == "test-uuid"
-
-    @patch("time.sleep")
-    @patch("urllib.request.urlopen")
-    def test_poll_retry_after_404_then_success(self, mock_urlopen, mock_sleep):
-        err_404 = urllib.error.HTTPError(
-            url="https://urlscan.io/api/v1/result/test-uuid/",
-            code=404,
-            msg="Not Found",
-            hdrs={},
-            fp=MagicMock(read=lambda: b'{"message": "Scan pending"}'),
-        )
-        success_resp = MagicMock()
-        success_resp.read.return_value = json.dumps({
-            "task": {"uuid": "test-uuid"},
-            "page": {"url": "https://example.com/"},
-        }).encode("utf-8")
-
-        mock_enter = MagicMock()
-        mock_enter.read.return_value = success_resp.read.return_value
-        success_ctx = MagicMock()
-        success_ctx.__enter__.return_value = mock_enter
-
-        mock_urlopen.side_effect = [err_404, err_404, success_ctx]
-
-        data, err = poll_scan_result("test-uuid", api_key="valid-key", max_wait_s=10, poll_interval_s=0.01)
-        assert data is not None
-        assert err is None
-        assert mock_sleep.call_count == 2
-
-    @patch("time.sleep")
-    @patch("urllib.request.urlopen")
-    def test_poll_timeout_handling(self, mock_urlopen, mock_sleep):
-        err_404 = urllib.error.HTTPError(
-            url="https://urlscan.io/api/v1/result/test-uuid/",
-            code=404,
-            msg="Not Found",
-            hdrs={},
-            fp=MagicMock(read=lambda: b'{"message": "Still running"}'),
-        )
-        mock_urlopen.side_effect = err_404
-
-        # Short timeout to trigger timeout branch
-        data, err = poll_scan_result("test-uuid", api_key="valid-key", max_wait_s=0.05, poll_interval_s=0.02)
-        assert data is None
-        assert "timed out" in err.lower()
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 3. EXTRACTION & FINDINGS TESTS
-# ═══════════════════════════════════════════════════════════════════
-
-class TestExtractSandboxFindings:
-    """Test parsing of raw urlscan.io JSON into structured findings."""
-
-    def test_extract_clean_page(self):
-        raw_data = {
-            "task": {
-                "reportURL": "https://urlscan.io/result/uuid-123/",
-                "screenshotURL": "https://urlscan.io/screenshots/uuid-123.png",
-                "domURL": "https://urlscan.io/dom/uuid-123/",
-            },
-            "page": {
-                "url": "https://example.com/",
-                "domain": "example.com",
-                "ip": "93.184.216.34",
-                "title": "Example Domain",
-                "server": "ECS",
-                "status": 200,
-                "asnname": "EDGECAST",
-                "tlsIssuer": "DigiCert",
-            },
-            "lists": {
-                "domains": ["example.com"],
-                "ips": ["93.184.216.34"],
-            },
-            "data": {
-                "redirects": [],
-                "requests": [],
-                "console": [],
-            },
-            "verdicts": {
-                "overall": {"score": 0, "malicious": False, "categories": []},
-            },
-        }
-
-        finding = extract_sandbox_findings("https://example.com", "uuid-123", raw_data)
         assert finding.status == "COMPLETED"
-        assert finding.verdict == "CLEAN"
-        assert finding.malicious_score == 0
+        assert finding.verdict in ("CLEAN", "UNKNOWN")
         assert finding.is_malicious is False
-        assert finding.effective_url == "https://example.com/"
-        assert finding.page_info["domain"] == "example.com"
-        assert finding.page_info["server"] == "ECS"
-        assert len(finding.downloads) == 0
-        assert len(finding.redirects) == 0
+        assert finding.effective_url.startswith("https://example.com")
+        assert "example.com" in finding.contacted_domains
+        assert finding.page_info.get("title") == "Example Domain"
+        assert finding.page_info.get("status_code") == 200
 
-    def test_extract_malicious_phishing_with_redirects_and_downloads(self):
-        raw_data = {
-            "task": {
-                "reportURL": "https://urlscan.io/result/uuid-evil/",
-                "screenshotURL": "https://urlscan.io/screenshots/uuid-evil.png",
-            },
-            "page": {
-                "url": "https://credential-stealer.ru/login",
-                "domain": "credential-stealer.ru",
-                "ip": "185.234.219.47",
-                "title": "Verify Bank Account",
-                "status": 200,
-            },
-            "lists": {
-                "domains": ["bit.ly", "credential-stealer.ru"],
-                "ips": ["185.234.219.47"],
-            },
-            "data": {
-                "redirects": [
-                    {"url": "http://bit.ly/fake-bank", "status": 301, "to": "https://credential-stealer.ru/login"}
-                ],
-                "requests": [
-                    {
-                        "request": {"url": "https://credential-stealer.ru/payload.exe"},
-                        "response": {
-                            "response": {
-                                "url": "https://credential-stealer.ru/payload.exe",
-                                "mimeType": "application/x-msdownload",
-                                "headers": {"Content-Disposition": 'attachment; filename="payload.exe"'},
-                            },
-                            "hash": "abc123hash",
-                            "size": 65536,
-                        },
-                    }
-                ],
-                "console": [
-                    {"message": {"level": "error", "text": "Uncaught ReferenceError: bad_func is not defined"}}
-                ],
-            },
-            "verdicts": {
-                "overall": {
-                    "score": 90,
-                    "malicious": True,
-                    "categories": ["phishing"],
-                    "tags": ["urlscan-ml"],
-                },
-                "engines": {"maliciousTotal": 3},
-            },
-            "meta": {
-                "processors": {
-                    "wappa": {"data": [{"app": "PHP"}, {"app": "Nginx"}]}
-                }
-            },
-        }
+        # Verify screenshot creation
+        assert finding.screenshot_url.startswith("/screenshots/")
+        filename = finding.screenshot_url.replace("/screenshots/", "")
+        screenshot_path = Path(config.SCREENSHOTS_DIR) / filename
+        assert screenshot_path.exists(), f"Screenshot file not found: {screenshot_path}"
+        assert screenshot_path.stat().st_size > 1000, "Screenshot file is too small or empty"
 
-        finding = extract_sandbox_findings("http://bit.ly/fake-bank", "uuid-evil", raw_data)
+    def test_contacted_ips_and_network_telemetry(self):
+        finding = scan_url_dynamic("https://example.com", force_live=True)
+        assert finding.status == "COMPLETED"
+        assert len(finding.network_requests) >= 1
+        assert finding.network_requests[0]["method"] in ("GET", "POST")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 3. BEHAVIORAL TELEMETRY & ERROR CAPTURE TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+class TestBehavioralTelemetry:
+    """Test capture of redirects, console errors, page errors, and downloads."""
+
+    def test_redirect_detection(self):
+        # http://example.com redirects to https://example.com/
+        finding = scan_url_dynamic("http://example.com", force_live=True)
+        assert finding.status == "COMPLETED"
+        assert finding.effective_url.startswith("https://")
+        assert "REDIRECT" in finding.behavior_indicators or len(finding.redirects) > 0
+
+    @patch("playwright.sync_api.sync_playwright")
+    def test_console_and_page_errors_captured(self, mock_playwright):
+        # Mock Playwright to emit console error and page error
+        mock_p = MagicMock()
+        mock_browser = MagicMock()
+        mock_ctx = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value = mock_p
+        mock_p.chromium.connect.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_ctx
+        mock_ctx.new_page.return_value = mock_page
+
+        def fake_goto(url, **kwargs):
+            # Trigger listeners
+            listeners = mock_page.on.call_args_list
+            for call in listeners:
+                event_name, handler = call[0][0], call[0][1]
+                if event_name == "console":
+                    msg = MagicMock()
+                    msg.type = "error"
+                    msg.text = "Uncaught SyntaxError: Unexpected token"
+                    handler(msg)
+                elif event_name == "pageerror":
+                    handler(Exception("DOM Exception: quota exceeded"))
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.headers = {"server": "TestServer"}
+            mock_resp.request.redirected_from = None
+            return mock_resp
+
+        mock_page.goto.side_effect = fake_goto
+        mock_page.url = "https://safe-test.org/"
+        mock_page.title.return_value = "Test Site"
+
+        finding = scan_url_browserless("https://safe-test.org")
+        assert finding.status == "COMPLETED"
+        assert "CONSOLE_ERROR" in finding.behavior_indicators
+        assert "PAGE_ERROR" in finding.behavior_indicators
+        assert any("Unexpected token" in err for err in finding.console_errors)
+        assert any("quota exceeded" in err for err in finding.page_errors)
+
+    @patch("playwright.sync_api.sync_playwright")
+    def test_download_detection_and_quarantine(self, mock_playwright):
+        # Mock download event
+        mock_p = MagicMock()
+        mock_browser = MagicMock()
+        mock_ctx = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value = mock_p
+        mock_p.chromium.connect.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_ctx
+        mock_ctx.new_page.return_value = mock_page
+
+        mock_download = MagicMock()
+        mock_download.suggested_filename = "malicious_invoice.exe"
+        mock_download.url = "https://evil-host.com/dl/malicious_invoice.exe"
+
+        def fake_goto(url, **kwargs):
+            for call in mock_page.on.call_args_list:
+                event_name, handler = call[0][0], call[0][1]
+                if event_name == "download":
+                    handler(mock_download)
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.headers = {}
+            mock_resp.request.redirected_from = None
+            return mock_resp
+
+        mock_page.goto.side_effect = fake_goto
+        mock_page.url = "https://evil-host.com/download"
+        mock_page.title.return_value = "Download Portal"
+
+        finding = scan_url_browserless("https://evil-host.com/download")
+        assert finding.status == "COMPLETED"
         assert finding.verdict == "MALICIOUS"
         assert finding.is_malicious is True
         assert finding.malicious_score >= 80
-        assert "phishing" in finding.categories
-        assert finding.effective_url == "https://credential-stealer.ru/login"
-        assert len(finding.redirects) == 1
+        assert "DOWNLOAD_DETECTED" in finding.behavior_indicators
         assert len(finding.downloads) == 1
-        assert finding.downloads[0]["filename"] == "payload.exe"
-        assert finding.downloads[0]["mime_type"] == "application/x-msdownload"
-        assert any("JavaScript console error" in b for b in finding.behavior_indicators)
-        assert any("PHP" in b for b in finding.behavior_indicators)
+        assert finding.downloads[0]["filename"] == "malicious_invoice.exe"
+        # Verify download was cancelled / discarded
+        mock_download.cancel.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 4. HIGH LEVEL SCAN & ANALYZE TESTS
+# 4. TIMEOUT & CLEANUP TESTS
 # ═══════════════════════════════════════════════════════════════════
 
-class TestHighLevelRunners:
-    """Test scan_url_dynamic and analyze_urls_dynamic."""
+class TestTimeoutAndCleanup:
+    """Test timeout handling and resource cleanup."""
+
+    @patch("playwright.sync_api.sync_playwright")
+    def test_timeout_handling(self, mock_playwright):
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        mock_p = MagicMock()
+        mock_browser = MagicMock()
+        mock_ctx = MagicMock()
+        mock_page = MagicMock()
+
+        mock_playwright.return_value.__enter__.return_value = mock_p
+        mock_p.chromium.connect.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_ctx
+        mock_ctx.new_page.return_value = mock_page
+
+        # Simulate timeout on page.goto
+        mock_page.goto.side_effect = PlaywrightTimeoutError("Navigation timeout of 30000ms exceeded")
+        mock_page.url = "https://very-slow-site.com"
+        mock_page.title.return_value = "Slow Site"
+
+        finding = scan_url_browserless("https://very-slow-site.com")
+        assert finding.status == "TIMEOUT"
+        assert finding.verdict == "UNKNOWN"
+        # Context and browser closed
+        mock_ctx.close.assert_called()
+        mock_browser.close.assert_called()
+
+
+    @patch("playwright.sync_api.sync_playwright")
+    def test_cleanup_after_connection_failure(self, mock_playwright):
+        mock_p = MagicMock()
+        mock_playwright.return_value.__enter__.return_value = mock_p
+        mock_p.chromium.connect.side_effect = ConnectionRefusedError("Docker container unreachable")
+
+        finding = scan_url_browserless("https://example.com")
+        assert finding.status == "FAILED"
+        assert finding.verdict == "UNKNOWN"
+        assert finding.intelligence_available is False
+        assert "unreachable" in (finding.error or "")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 5. MOCK MODE TESTS (MOCK_URLSCAN=True)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestMockMode:
+    """Validate deterministic mock responses for testing and offline development."""
 
     def test_mock_phishing_url(self):
         with patch.object(config, "MOCK_URLSCAN", True):
             finding = scan_url_dynamic("http://bit.ly/3xHDFC-verify")
+            assert finding.mode == "MOCK"
             assert finding.verdict == "MALICIOUS"
             assert finding.malicious_score == 96
             assert finding.effective_url == "https://secure-banking-update.xyz/login.php"
@@ -316,9 +301,25 @@ class TestHighLevelRunners:
     def test_mock_clean_url(self):
         with patch.object(config, "MOCK_URLSCAN", True):
             finding = scan_url_dynamic("https://example.com")
+            assert finding.mode == "MOCK"
             assert finding.verdict == "CLEAN"
             assert finding.malicious_score == 0
             assert finding.page_info["domain"] == "example.com"
+
+    def test_mock_unknown_url_returns_unknown_verdict(self):
+        with patch.object(config, "MOCK_URLSCAN", True):
+            finding = scan_url_dynamic("https://arbitrary-unseen-target.org/path")
+            assert finding.mode == "MOCK"
+            assert finding.verdict == "UNKNOWN"
+            assert finding.intelligence_available is False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 6. BATCH RUNNER & DEDUPLICATION TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+class TestBatchRunner:
+    """Test analyze_urls_dynamic deduplication and scan limiting."""
 
     def test_analyze_urls_dynamic_deduplication_and_limit(self):
         with patch.object(config, "MOCK_URLSCAN", True):
@@ -334,114 +335,38 @@ class TestHighLevelRunners:
             assert len(result.findings) == 2
             assert any("first 2 unique URLs" in lim for lim in result.limitations)
 
-    def test_disabled_or_missing_key_live(self):
-        # Force live without API key
-        with patch.object(config, "URLSCAN_API_KEY", ""):
-            with patch.object(config, "MOCK_URLSCAN", False):
-                finding = scan_url_dynamic("https://example.com", api_key="", force_live=True)
-                assert finding.status == "ERROR"
-                assert finding.verdict == "UNKNOWN"
-                assert any("disabled or API key is not configured" in r for r in finding.reasons)
-
 
 # ═══════════════════════════════════════════════════════════════════
-# 5. EVIDENCE CORRELATION & PIPELINE INTEGRATION
+# 7. FASTAPI REST ENDPOINT TESTS
 # ═══════════════════════════════════════════════════════════════════
 
-class TestPipelineIntegration:
-    """Test correlation of sandbox findings with ML and report generation."""
-
-    def test_correlate_evidence_with_sandbox(self):
-        from ..ml_classifier import MLResult
-        from ..authentication_analyzer import AuthResult
-        from ..ip_intelligence import IPIntelligence
-        from ..domain_intelligence import DomainIntelligence
-        from ..url_analyzer import URLAnalysis
-        from ..attachment_analyzer import AttachmentAnalysis
-
-        ml = MLResult(prediction="PHISHING", decision_score=2.1, model_available=True, note="High confidence phishing pattern")
-        auth = AuthResult(
-            spf="PASS", dkim="PASS", dmarc="PASS",
-            spf_detail="", dkim_detail="", dmarc_detail="",
-            all_passed=True, any_failed=False, summary="All authentication checks passed"
-        )
-        ip_intel = IPIntelligence(public_ips=[], records=[], any_malicious=False, any_suspicious=False, max_reputation_score=0, limitations=[])
-        dom_intel = DomainIntelligence(
-            domain="example.com", reputation="clean", reputation_score=10,
-            categories=[], age_days=500, registrar=None, virustotal_flags=None,
-            is_suspicious_tld=False, tld=".com", is_typosquat=False,
-            typosquat_target="", risk_score=10, reasons=[], source="MOCK"
-        )
-        urls = URLAnalysis(total_count=1, suspicious_count=1, findings=[], all_urls=[], limitations=[])
-        atts = AttachmentAnalysis(total_count=0, suspicious_count=0, findings=[])
-
-        with patch.object(config, "MOCK_URLSCAN", True):
-            sandbox = analyze_urls_dynamic(["http://bit.ly/3xHDFC-verify"])
-            assert sandbox.malicious_count == 1
-
-            evidence = correlate_evidence(
-                ml=ml,
-                auth=auth,
-                ip_intel=ip_intel,
-                domain_intel=dom_intel,
-                url_analysis=urls,
-                att_analysis=atts,
-                url_sandbox=sandbox,
-            )
-
-        sources = [e["source"] for e in evidence]
-        assert "urlscan.io Sandbox" in sources
-        assert "Cross-Vector" in sources
-
-        findings_text = " ".join(e["finding"] for e in evidence)
-        assert "confirmed MALICIOUS activity" in findings_text
-        assert "unmasked redirection" in findings_text
-        assert "intercepted payload download" in findings_text
-        assert "Remote urlscan.io dynamic execution confirmed malicious URL in email classified as phishing by ML" in findings_text
-
-    def test_full_analyze_email_pipeline_with_url_sandbox(self):
-        eml = """From: Security Team <alert@secure-notice.com>
-To: target@victim.org
-Subject: Urgent Action Required: Account Suspension Warning
-Date: Tue, 09 Sep 2026 00:00:00 +0000
-Message-ID: <threat-12345@secure-notice.com>
-
-Dear Customer,
-Your account has been suspended due to suspicious activity.
-Please restore your access immediately:
-http://bit.ly/3xHDFC-verify
-"""
-        with patch.object(config, "MOCK_URLSCAN", True):
-            report = analyze_email(eml)
-            assert "forensics" in report
-            assert "url_sandbox" in report["forensics"]
-            sandbox_data = report["forensics"]["url_sandbox"]
-            assert sandbox_data["total_scanned"] >= 1
-            assert sandbox_data["malicious_count"] >= 1
-            assert "dynamic_sandbox" in report["urls"]
-
-
-# ═══════════════════════════════════════════════════════════════════
-# 6. FASTAPI ENDPOINT TESTS
-# ═══════════════════════════════════════════════════════════════════
-
-class TestFastAPIEndpoint:
-    """Test /sandbox/scan-url endpoint."""
+class TestFastAPIEndpoints:
+    """Test /sandbox/scan-url and /screenshots static serving."""
 
     def setup_method(self):
         self.client = TestClient(app)
 
-    def test_scan_url_endpoint_mock(self):
-        with patch.object(config, "MOCK_URLSCAN", True):
-            resp = self.client.post("/sandbox/scan-url", json={"url": "http://bit.ly/3xHDFC-verify"})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["verdict"] == "MALICIOUS"
-            assert data["malicious_score"] == 96
-            assert data["effective_url"] == "https://secure-banking-update.xyz/login.php"
-            assert len(data["downloads"]) == 1
+    def test_scan_url_endpoint_success(self):
+        resp = self.client.post("/sandbox/scan-url", json={"url": "https://example.com", "force_live": True})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "COMPLETED"
+        assert data["effective_url"].startswith("https://example.com")
+        assert data["screenshot_url"].startswith("/screenshots/")
 
-    def test_scan_url_endpoint_empty(self):
+        # Test static screenshot retrieval
+        ss_resp = self.client.get(data["screenshot_url"])
+        assert ss_resp.status_code == 200
+        assert ss_resp.headers["content-type"].startswith("image/png")
+
+    def test_scan_url_endpoint_ssrf_blocked(self):
+        resp = self.client.post("/sandbox/scan-url", json={"url": "http://127.0.0.1:3000", "force_live": True})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "BLOCKED"
+        assert "SSRF_ATTEMPT_BLOCKED" in data["behavior_indicators"]
+
+    def test_scan_url_endpoint_empty_url_returns_400(self):
         resp = self.client.post("/sandbox/scan-url", json={"url": "   "})
         assert resp.status_code == 400
         assert "URL cannot be empty" in resp.json()["detail"]

@@ -13,6 +13,19 @@ venv/
 .env
 backend/.env
 *.env
+.gmail_token.json
+backend/.gmail_token.json
+.gmail_cache.json
+backend/.gmail_cache.json
+.gmail_oauth_states.json
+backend/.gmail_oauth_states.json
+credentials*.json
+token*.json
+*.log
+backend/*.log
+backend/screenshots/*.png
+!backend/screenshots/.gitkeep
+
 
 # Trained ML models (large binary files)
 *.pkl

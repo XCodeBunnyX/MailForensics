@@ -6,7 +6,7 @@
 class GmailGuardAPIClient {
   constructor() {
     this.baseUrl = this._resolveBaseUrl();
-    this.timeoutMs = 20000; // 20-second timeout for multi-step forensic analysis
+    this.timeoutMs = 120000; // 2-minutes timeout for multi-step forensic analysis
   }
 
   _resolveBaseUrl() {
@@ -43,7 +43,7 @@ class GmailGuardAPIClient {
     } catch (err) {
       clearTimeout(timeout);
       if (err.name === 'AbortError') {
-        throw new Error('Analysis request timed out after 20 seconds. The backend may be processing heavy external intelligence.');
+        throw new Error('Analysis request timed out after 2 minutes. The backend may be processing heavy external intelligence.');
       }
       throw new Error(`Network error: Unable to connect to GmailGuard backend at ${this.baseUrl || 'local server'}.`);
     }
@@ -57,7 +57,7 @@ class GmailGuardAPIClient {
     try {
       const res = await this._fetchWithTimeout(`${this.baseUrl}/health`, {
         method: 'GET',
-        timeoutMs: 4000
+        timeoutMs: 12000
       });
       if (res.ok) {
         const data = await res.json();
@@ -153,6 +153,151 @@ class GmailGuardAPIClient {
     }
 
     throw new Error(`Analysis Failed (${response.status}): ${detail}`);
+  }
+
+  /**
+   * Check Gemini AI service readiness
+   * @returns {Promise<{ configured: boolean, available: boolean, candidate_models: string[] }>}
+   */
+  async checkGeminiStatus() {
+    try {
+      const res = await this._fetchWithTimeout(`${this.baseUrl}/api/gemini/status`, {
+        method: 'GET',
+        timeoutMs: 8000
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+      return { configured: false, available: false, candidate_models: [] };
+    } catch (_) {
+      return { configured: false, available: false, candidate_models: [] };
+    }
+  }
+
+  /**
+   * On-demand Gemini AI contextual security analysis
+   * @param {string} rawEmail
+   * @param {object} report
+   * @returns {Promise<object>} Gemini AI analysis result
+   */
+  async analyzeWithGemini(rawEmail = '', report = null) {
+    const res = await this._fetchWithTimeout(`${this.baseUrl}/api/gemini/analyze`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        raw_email: rawEmail || '',
+        report: report || null
+      }),
+      timeoutMs: 45000
+    });
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Get aggregate Gemini mailbox security overview
+   * @returns {Promise<object>} Overview statistics
+   */
+  async getGeminiOverview() {
+    const res = await this._fetchWithTimeout(`${this.baseUrl}/api/gemini/overview`, {
+      method: 'GET',
+      timeoutMs: 15000
+    });
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Get Gmail connection status
+   * @returns {Promise<object>} Connection status
+   */
+  async getGmailStatus() {
+    const res = await this._fetchWithTimeout(`${this.baseUrl}/api/gmail/status`, {
+      method: 'GET',
+      timeoutMs: 10000
+    });
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Get Google OAuth 2.0 Authorization URL
+   * @param {string} [redirectUri]
+   * @returns {Promise<{ auth_url: string, state: string }>}
+   */
+  async getGmailAuthUrl(redirectUri = '') {
+    const url = redirectUri
+      ? `${this.baseUrl}/api/gmail/auth-url?redirect_uri=${encodeURIComponent(redirectUri)}`
+      : `${this.baseUrl}/api/gmail/auth-url`;
+    const res = await this._fetchWithTimeout(url, {
+      method: 'GET',
+      timeoutMs: 10000
+    });
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Disconnect Gmail account
+   * @returns {Promise<object>}
+   */
+  async disconnectGmail() {
+    const res = await this._fetchWithTimeout(`${this.baseUrl}/api/gmail/disconnect`, {
+      method: 'POST',
+      timeoutMs: 10000
+    });
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Fetch user messages from Gmail inbox
+   * @param {number} [maxResults=25]
+   * @param {string} [query='']
+   * @param {string} [pageToken='']
+   * @returns {Promise<object>} Messages list
+   */
+  async getGmailMessages(maxResults = 25, query = '', pageToken = '') {
+    const params = new URLSearchParams();
+    if (maxResults) params.set('max_results', String(maxResults));
+    if (query) params.set('query', query);
+    if (pageToken) params.set('page_token', pageToken);
+
+    const res = await this._fetchWithTimeout(`${this.baseUrl}/api/gmail/messages?${params.toString()}`, {
+      method: 'GET',
+      timeoutMs: 25000
+    });
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Run full forensic pipeline + Gemini analysis on specific Gmail message
+   * @param {string} messageId
+   * @param {boolean} [reanalyze=false]
+   * @returns {Promise<object>} Full threat report JSON
+   */
+  async analyzeGmailMessage(messageId, reanalyze = false) {
+    const res = await this._fetchWithTimeout(
+      `${this.baseUrl}/api/gmail/analyze/${encodeURIComponent(messageId)}?reanalyze=${reanalyze}`,
+      {
+        method: 'POST',
+        timeoutMs: 120000
+      }
+    );
+    return this._handleResponse(res);
+  }
+
+  /**
+   * Get cached analysis for Gmail message
+   * @param {string} messageId
+   * @returns {Promise<object>} Cached report
+   */
+  async getGmailAnalysis(messageId) {
+    const res = await this._fetchWithTimeout(
+      `${this.baseUrl}/api/gmail/analysis/${encodeURIComponent(messageId)}`,
+      {
+        method: 'GET',
+        timeoutMs: 15000
+      }
+    );
+    return this._handleResponse(res);
   }
 }
 

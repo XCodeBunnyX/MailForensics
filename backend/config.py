@@ -28,6 +28,25 @@ SIGNAL_WEIGHTS: dict[str, float] = {
 }
 
 # ──────────────────────────────────────────────
+# RISK ACCUMULATION SCORING ARCHITECTURE
+# ──────────────────────────────────────────────
+PRIMARY_SIGNAL_WEIGHTS: dict[str, float] = {
+    "ml":             0.35,   # Core linguistic & NLP classifier (balanced; never unilaterally dominates)
+    "domain":         0.25,   # Sender domain intelligence & typosquatting
+    "authentication": 0.25,   # SPF / DKIM / DMARC authentication
+    "ip":             0.15,   # Observable public relay infrastructure
+}
+
+PAYLOAD_BOOST_CONFIG: dict[str, float] = {
+    "url_max_boost":        25.0,   # Maximum bonus risk points for malicious URLs
+    "att_max_boost":        25.0,   # Maximum bonus risk points for dangerous attachments
+    "clean_threshold":      25.0,   # Sub-scores at or below this add 0 bonus risk
+    "suspicious_threshold": 40.0,   # Threshold for moderate risk boost
+    "malicious_threshold":  70.0,   # Threshold for high-risk boost
+    "corroboration_3_plus": 1.06,   # Multiplier when 3+ independent risk channels fire
+}
+
+# ──────────────────────────────────────────────
 # AUTHENTICATION SUB-WEIGHTS  (within the 0.20 block)
 # ──────────────────────────────────────────────
 AUTH_SUB_WEIGHTS: dict[str, float] = {
@@ -241,9 +260,24 @@ SUSPICIOUS_PDF_CONTENT_KEYWORDS: list[str] = [
 ]
 
 # ──────────────────────────────────────────────
-# URLSCAN.IO DYNAMIC SANDBOX ANALYSIS
+# LOCAL BROWSERLESS CHROMIUM SANDBOX ANALYSIS
 # ──────────────────────────────────────────────
-# API key loaded from environment (.env), never hardcoded
+# Self-hosted Browserless container in Docker (ghcr.io/browserless/chromium)
+BROWSERLESS_URL: str = _os.getenv("BROWSERLESS_URL", "http://localhost:3000")
+BROWSERLESS_TOKEN: str = _os.getenv("BROWSERLESS_TOKEN", "gmailguard-local")
+BROWSER_SANDBOX_ENABLED: bool = _os.getenv("BROWSER_SANDBOX_ENABLED", "true").lower() == "true"
+BROWSER_SANDBOX_TIMEOUT_MS: int = int(_os.getenv("BROWSER_SANDBOX_TIMEOUT", "60000"))
+BROWSER_SANDBOX_MAX_URLS: int = int(_os.getenv("BROWSER_SANDBOX_MAX_URLS", "3"))
+BROWSER_SANDBOX_MAX_NETWORK_EVENTS: int = int(_os.getenv("BROWSER_SANDBOX_MAX_NETWORK_EVENTS", "100"))
+
+# Controlled directory for forensic screenshots
+SCREENSHOTS_DIR: Path = Path(__file__).resolve().parent / "screenshots"
+try:
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+# Backwards compatibility / mock mode toggles
 URLSCAN_API_KEY: str = _os.getenv("URLSCAN_API_KEY", "")
 URLSCAN_ENABLED: bool = _os.getenv("URLSCAN_ENABLED", "true").lower() == "true"
 MOCK_URLSCAN: bool = _os.getenv("MOCK_URLSCAN", "false").lower() == "true"
@@ -252,7 +286,89 @@ URLSCAN_RESULT_BASE_URL: str = "https://urlscan.io/api/v1/result/"
 URLSCAN_POLL_TIMEOUT_S: int = int(_os.getenv("URLSCAN_POLL_TIMEOUT_S", "45"))
 URLSCAN_POLL_INTERVAL_S: float = float(_os.getenv("URLSCAN_POLL_INTERVAL_S", "3.0"))
 URLSCAN_VISIBILITY: str = _os.getenv("URLSCAN_VISIBILITY", "unlisted")
-URLSCAN_MAX_URLS_PER_ANALYSIS: int = int(_os.getenv("URLSCAN_MAX_URLS_PER_ANALYSIS", "3"))
+URLSCAN_MAX_URLS_PER_ANALYSIS: int = BROWSER_SANDBOX_MAX_URLS
 
-del _os
+# ──────────────────────────────────────────────
+# GEMINI AI SECURITY & INTELLIGENCE LAYER
+# ──────────────────────────────────────────────
+def _clean_env_val(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    return str(val).strip().strip('"').strip("'")
+
+
+def reload_env() -> None:
+    try:
+        from dotenv import load_dotenv
+        _backend_env = Path(__file__).resolve().parent / ".env"
+        if _backend_env.exists():
+            load_dotenv(_backend_env, override=True)
+    except Exception:
+        pass
+
+
+def get_gemini_api_key() -> str:
+    val = _clean_env_val(os.getenv("GEMINI_API_KEY", ""))
+    if not val:
+        reload_env()
+        val = _clean_env_val(os.getenv("GEMINI_API_KEY", ""))
+    return val
+
+
+def get_gemini_model() -> str:
+    val = _clean_env_val(os.getenv("GEMINI_MODEL", ""))
+    if not val:
+        reload_env()
+        val = _clean_env_val(os.getenv("GEMINI_MODEL", "gemini-3.5-flash"))
+    return val or "gemini-3.5-flash"
+
+
+def get_gmail_client_id() -> str:
+    val = _clean_env_val(os.getenv("GMAIL_CLIENT_ID", ""))
+    if not val:
+        reload_env()
+        val = _clean_env_val(os.getenv("GMAIL_CLIENT_ID", ""))
+    return val
+
+
+def get_gmail_client_secret() -> str:
+    val = _clean_env_val(os.getenv("GMAIL_CLIENT_SECRET", ""))
+    if not val:
+        reload_env()
+        val = _clean_env_val(os.getenv("GMAIL_CLIENT_SECRET", ""))
+    return val
+
+
+def get_gmail_redirect_uri() -> str:
+    val = _clean_env_val(os.getenv("GMAIL_REDIRECT_URI", ""))
+    if not val:
+        reload_env()
+        val = _clean_env_val(os.getenv("GMAIL_REDIRECT_URI", ""))
+    return val or "http://127.0.0.1:8000/api/gmail/oauth2callback"
+
+
+GEMINI_API_KEY: str = get_gemini_api_key()
+GEMINI_MODEL: str = get_gemini_model()
+GEMINI_CANDIDATE_MODELS: list[str] = [
+    get_gemini_model(),
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-flash-latest",
+]
+
+# ──────────────────────────────────────────────
+# GMAIL API & OAUTH 2.0 INTEGRATION
+# ──────────────────────────────────────────────
+GMAIL_CLIENT_ID: str = get_gmail_client_id()
+GMAIL_CLIENT_SECRET: str = get_gmail_client_secret()
+GMAIL_REDIRECT_URI: str = get_gmail_redirect_uri()
+GMAIL_SCOPES: list[str] = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+]
+GMAIL_TOKEN_PATH: Path = Path(__file__).resolve().parent / ".gmail_token.json"
+GMAIL_CACHE_PATH: Path = Path(__file__).resolve().parent / ".gmail_cache.json"
+GMAIL_CREDENTIALS_FILE: str = os.getenv("GMAIL_CREDENTIALS_FILE", "")
+
+
 

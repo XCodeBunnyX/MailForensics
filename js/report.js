@@ -383,6 +383,52 @@ class ForensicReportGenerator {
     </table>` : '<div style="font-size:12px;color:#64748b">No attachments detected in email.</div>'}
   </div>
 
+  <!-- Gemini AI Contextual Security Assessment -->
+  ${(r.geminiAnalysis && r.geminiAnalysis.available) ? `
+  <div class="section">
+    <div class="section-title"><span>✨ Google Gemini AI Contextual Security Assessment (${escapeHtml(r.geminiAnalysis.modelUsed || 'Gemini Flash')})</span></div>
+    <div class="grid-2" style="margin-bottom:12px">
+      <div class="info-card">
+        <div class="info-label">AI Threat Classification</div>
+        <div class="info-value" style="color:${r.geminiAnalysis.classification === 'phishing' ? '#ff2d55' : r.geminiAnalysis.classification === 'suspicious' ? '#ff6b35' : '#34d399'};font-weight:700">
+          ${escapeHtml(r.geminiAnalysis.classification.toUpperCase())} (Confidence: ${r.geminiAnalysis.confidence}%)
+        </div>
+      </div>
+      <div class="info-card">
+        <div class="info-label">Evaluated Risk Level</div>
+        <div class="info-value" style="color:#00d4ff;font-weight:700">
+          ${escapeHtml(r.geminiAnalysis.riskLevel.toUpperCase())}
+        </div>
+      </div>
+    </div>
+    <div class="scope-box" style="margin-bottom:14px">
+      <div style="font-weight:700;font-size:11px;color:#00d4ff;text-transform:uppercase;margin-bottom:4px">Executive AI Threat Summary</div>
+      <div>${escapeHtml(r.geminiAnalysis.summary)}</div>
+    </div>
+    ${(r.geminiAnalysis.threatIndicators && r.geminiAnalysis.threatIndicators.length > 0) ? `
+      <div style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;margin-bottom:8px">Identified Threat Indicators:</div>
+      ${r.geminiAnalysis.threatIndicators.map(ti => `
+        <div class="finding-item" style="border-color:${ti.severity === 'high' ? '#ff2d55' : '#ffd60a'}">
+          <div class="finding-title" style="color:#e2e8f0">${escapeHtml(ti.indicator)} <span class="badge ${ti.severity === 'high' ? 'badge-critical' : 'badge-medium'}">${escapeHtml(ti.severity || 'medium')}</span></div>
+          <div class="finding-detail">${escapeHtml(ti.evidence)}</div>
+        </div>
+      `).join('')}
+    ` : ''}
+    ${(r.geminiAnalysis.recommendedActions && r.geminiAnalysis.recommendedActions.length > 0) ? `
+      <div style="font-size:11px;font-weight:700;color:#34d399;text-transform:uppercase;margin-top:12px;margin-bottom:6px">Recommended SOC Actions:</div>
+      <ul style="padding-left:20px;font-size:11px;color:#cbd5e1">
+        ${r.geminiAnalysis.recommendedActions.map(act => `<li style="margin-bottom:4px">${escapeHtml(act)}</li>`).join('')}
+      </ul>
+    ` : ''}
+    ${r.geminiAnalysis.explanation ? `
+      <div style="margin-top:12px;padding:10px;background:#080e1c;border-radius:6px;font-size:11px;color:#94a3b8;line-height:1.5">
+        <strong style="color:#e2e8f0">AI Forensic Reasoning:</strong><br>
+        ${escapeHtml(r.geminiAnalysis.explanation)}
+      </div>
+    ` : ''}
+  </div>
+  ` : ''}
+
   <!-- AI Content Analysis -->
   <div class="section">
     <div class="section-title"><span>🤖 AI Content Analysis (Linear Support Vector Machine)</span></div>

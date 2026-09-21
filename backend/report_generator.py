@@ -433,9 +433,10 @@ def generate_report(
         "evidence":          evidence_list,
         "positive_evidence": positive_evidence_list,
 
-        "sub_scores":    threat_score.sub_scores,
-        "weights_used":  threat_score.weights_used,
-        "limitations":   all_limitations,
+        "sub_scores":      threat_score.sub_scores,
+        "score_breakdown": getattr(threat_score, "score_breakdown", {}),
+        "weights_used":    threat_score.weights_used,
+        "limitations":     all_limitations,
         
         "forensics":           forensics_section,
         "forensic_anomalies":  forensic_anomalies,

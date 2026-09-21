@@ -13,6 +13,10 @@ class ThreatGraph {
   build() {
     const container = document.getElementById(this.containerId);
     if (!container) return;
+    if (typeof d3 === 'undefined') {
+      container.innerHTML = '<div style="padding:40px;text-align:center;color:#94a3b8;font-size:13px">📊 Threat relationship graph requires D3.js (CDN unavailable)</div>';
+      return;
+    }
     container.innerHTML = '';
     this.width = container.offsetWidth || 700;
 

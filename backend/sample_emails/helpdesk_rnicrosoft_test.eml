@@ -1,0 +1,19 @@
+MIME-Version: 1.0
+Date: Mon, 21 Sep 2026 14:56:22 +0530
+Message-ID: <CAJd7kVt_Ve-GFKL==rt0k3KG4owSQk_Om=Yg-0Jj7-97MDNdsw@mail.gmail.com>
+Subject: Test Email
+From: Prakhar Rathore <prakharrathore006@gmail.com>
+To: Prakhar Rathore <prakharrathore006@gmail.com>
+Content-Type: multipart/alternative; boundary="000000000000f462ca065bfad786"
+
+--000000000000f462ca065bfad786
+Content-Type: text/plain; charset="UTF-8"
+
+Hi how are you?
+link : www.github.com
+--000000000000f462ca065bfad786
+Content-Type: text/html; charset="UTF-8"
+
+<div dir="ltr">Hi how are you?</div>
+
+--000000000000f462ca065bfad786--

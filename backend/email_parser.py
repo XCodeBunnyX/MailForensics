@@ -110,9 +110,10 @@ def parse_email(raw_email: str) -> ParsedEmail:
     """
     parse_errors: list[str] = []
 
+    raw_email_clean = raw_email.lstrip() if raw_email else ""
     try:
         msg: Message = email.message_from_string(
-            raw_email, policy=email.policy.compat32
+            raw_email_clean, policy=email.policy.compat32
         )
     except Exception as exc:
         parse_errors.append(f"Failed to parse email structure: {exc}")
@@ -154,8 +155,26 @@ def parse_email(raw_email: str) -> ParsedEmail:
     # ── Received headers (preserve order) ───────────────────────
     received_headers: list[str] = msg.get_all("Received") or []
 
-    # ── Authentication-Results ───────────────────────────────────
-    auth_results = all_headers.get("authentication-results", "")
+    # ── Authentication-Results (collect all RFC 8601 occurrences) ─
+    auth_results_list = msg.get_all("Authentication-Results") or []
+    if not auth_results_list:
+        # Fallback to ARC or Original if standard header is absent
+        auth_results_list = (
+            msg.get_all("ARC-Authentication-Results")
+            or msg.get_all("Authentication-Results-Original")
+            or msg.get_all("X-Authentication-Results")
+            or []
+        )
+    if not auth_results_list and "authentication-results" in all_headers:
+        auth_results_list = [all_headers["authentication-results"]]
+    auth_results = "\n".join(str(h) for h in auth_results_list)
+    if auth_results:
+        all_headers["authentication-results"] = auth_results
+
+    # Ensure all Received-SPF headers are preserved in all_headers
+    rec_spf_list = msg.get_all("Received-SPF") or []
+    if rec_spf_list:
+        all_headers["received-spf"] = "\n".join(str(h) for h in rec_spf_list)
 
     # ── X-Originating-IP, X-Mailer ──────────────────────────────
     x_orig_ip = all_headers.get("x-originating-ip", "")

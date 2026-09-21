@@ -52,15 +52,21 @@ def _extract_result(header_val: str, protocol: str) -> str:
     if not header_val:
         return "UNKNOWN"
 
-    # Look for  <protocol>=<result>  pattern
+    # Look for  <protocol>=<result>  pattern across all lines
     pattern = re.compile(
         rf'\b{re.escape(protocol)}\s*=\s*([\w]+)',
         re.IGNORECASE
     )
-    match = pattern.search(header_val)
-    if match:
-        raw = match.group(1).lower()
-        return _NORMALIZE_MAP.get(raw, "UNKNOWN")
+    matches = pattern.findall(header_val)
+    if not matches:
+        return "UNKNOWN"
+
+    normalized = [_NORMALIZE_MAP.get(m.lower(), "UNKNOWN") for m in matches]
+
+    # Prioritize definitive failure or pass over neutral/none/unknown
+    for status in ("FAIL", "SOFTFAIL", "PERMERROR", "TEMPERROR", "PASS", "NEUTRAL", "NONE"):
+        if status in normalized:
+            return status
 
     return "UNKNOWN"
 
@@ -72,7 +78,9 @@ def _parse_received_spf(spf_header: str) -> str:
     """
     if not spf_header:
         return "UNKNOWN"
-    match = re.match(r'\s*([\w]+)', spf_header.strip(), re.IGNORECASE)
+    # Strip optional header prefix if present (e.g. 'Received-SPF:')
+    clean = re.sub(r'^\s*Received-SPF\s*:\s*', '', spf_header, flags=re.IGNORECASE).strip()
+    match = re.search(r'\b(pass|fail|softfail|neutral|none|permerror|temperror|hardfail)\b', clean, re.IGNORECASE)
     if match:
         raw = match.group(1).lower()
         return _NORMALIZE_MAP.get(raw, "UNKNOWN")
@@ -116,17 +124,24 @@ def analyze_authentication(parsed: ParsedEmail) -> AuthResult:
 
     # ── SPF ─────────────────────────────────────────────────────
     spf = _extract_result(auth_hdr, "spf")
-    if spf == "UNKNOWN":
+    received_spf = all_headers.get("received-spf", "")
+    if (spf == "UNKNOWN" or spf == "NONE") and received_spf:
         # Fallback: Received-SPF header
-        received_spf = all_headers.get("received-spf", "")
-        spf = _parse_received_spf(received_spf)
+        spf_fallback = _parse_received_spf(received_spf)
+        if spf_fallback != "UNKNOWN":
+            spf = spf_fallback
 
     # Extract detail snippet for forensic display
     spf_detail_match = re.search(
         r'spf\s*=\s*[\w]+\s*(?:\([^)]*\))?[^;]*',
         auth_hdr, re.IGNORECASE
     )
-    spf_detail = spf_detail_match.group(0).strip() if spf_detail_match else spf
+    if spf_detail_match:
+        spf_detail = spf_detail_match.group(0).strip()
+    elif received_spf and spf != "UNKNOWN":
+        spf_detail = re.sub(r'^\s*Received-SPF\s*:\s*', '', received_spf, flags=re.IGNORECASE).strip()[:150]
+    else:
+        spf_detail = spf
 
     # ── DKIM ────────────────────────────────────────────────────
     dkim = _extract_result(auth_hdr, "dkim")
@@ -140,7 +155,12 @@ def analyze_authentication(parsed: ParsedEmail) -> AuthResult:
         r'dkim\s*=\s*[\w]+\s*(?:\([^)]*\))?[^;]*',
         auth_hdr, re.IGNORECASE
     )
-    dkim_detail = dkim_detail_match.group(0).strip() if dkim_detail_match else dkim
+    if dkim_detail_match:
+        dkim_detail = dkim_detail_match.group(0).strip()
+    elif dkim == "NONE" and "dkim-signature" in all_headers:
+        dkim_detail = "DKIM-Signature header present but unverified"
+    else:
+        dkim_detail = dkim
 
     # ── DMARC ───────────────────────────────────────────────────
     dmarc = _extract_result(auth_hdr, "dmarc")
